@@ -1,8 +1,11 @@
+import sys
 import json
 import webbrowser
 import threading
+import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from main import clean
+from trace import on as traceon
 
 page = """<!DOCTYPE html>
 <html lang="en">
@@ -28,7 +31,7 @@ button.act { background: #4a7cff; border-color: #4a7cff; color: #fff; }
 button.act:hover { background: #5b88ff; border-color: #5b88ff; }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
 .foot { display: flex; gap: 10px; margin-top: 16px; align-items: center; }
-.note { color: #8b95a3; font-size: 12px; margin-left: auto; }
+.note { color: #8b95a3; font-size: 12px; margin-left: auto; max-width: 60%; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
 .note.ok { color: #4ade80; }
 .note.bad { color: #f87171; }
 input[type=file] { display: none; }
@@ -67,7 +70,12 @@ input[type=file] { display: none; }
 </div>
 <script>
 const pick = (id) => document.getElementById(id);
-function say(text, cls) { const e = pick('note'); e.textContent = text; e.className = 'note' + (cls ? ' ' + cls : ''); }
+function say(text, cls) {
+  const e = pick('note');
+  e.textContent = text;
+  e.title = text;
+  e.className = 'note' + (cls ? ' ' + cls : '');
+}
 pick('load').onclick = () => pick('pick').click();
 pick('pick').onchange = (e) => {
   const file = e.target.files[0];
@@ -88,21 +96,35 @@ pick('deobf').onclick = async () => {
   const text = pick('src').value;
   if (!text.trim()) { say('nothing to do', 'bad'); return; }
   say('working...');
+  let res;
   try {
-    const res = await fetch('/work', {
+    res = await fetch('/work', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text })
+      body: JSON.stringify({ text: text })
     });
-    if (!res.ok) throw new Error('server ' + res.status);
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    pick('out').value = data.text;
-    pick('copy').disabled = false;
-    pick('save').disabled = false;
-    say('done', 'ok');
   } catch (err) {
-    say(err.message, 'bad');
+    say('network: ' + err.message, 'bad');
+    return;
+  }
+  let data = {};
+  try {
+    data = await res.json();
+  } catch (err) {
+    say('bad response from server', 'bad');
+    return;
+  }
+  if (!res.ok || data.error) {
+    say(data.error || ('server ' + res.status), 'bad');
+    return;
+  }
+  pick('out').value = data.text;
+  pick('copy').disabled = false;
+  pick('save').disabled = false;
+  if (data.notes && data.notes.length) {
+    say('done - ' + data.notes.join('; '), 'ok');
+  } else {
+    say('done', 'ok');
   }
 };
 pick('copy').onclick = async () => {
@@ -111,7 +133,7 @@ pick('copy').onclick = async () => {
   try {
     await navigator.clipboard.writeText(text);
     say('copied', 'ok');
-  } catch {
+  } catch (err) {
     pick('out').select();
     document.execCommand('copy');
     say('copied', 'ok');
@@ -159,6 +181,8 @@ class door(BaseHTTPRequestHandler):
             raw = self.rfile.read(size).decode('utf-8')
             payload = json.loads(raw)
             src = payload.get('text', '')
+            if not isinstance(src, str):
+                raise ValueError('text must be a string')
             out, note = clean(src)
             body = json.dumps({'text': out, 'notes': note['notes']}).encode('utf-8')
             self.send_response(200)
@@ -167,8 +191,17 @@ class door(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         except Exception as e:
-            body = json.dumps({'error': str(e)}).encode('utf-8')
-            self.send_response(500)
+            tb = traceback.format_exc()
+            sys.stderr.write(tb)
+            sys.stderr.flush()
+            name = e.__class__.__name__
+            text = str(e)
+            if text:
+                msg = name + ': ' + text
+            else:
+                msg = name
+            body = json.dumps({'error': msg}).encode('utf-8')
+            self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
@@ -179,6 +212,7 @@ def run(host='127.0.0.1', port=8899):
     server = HTTPServer((host, port), door)
     url = 'http://%s:%d/' % (host, server.server_address[1])
     print('running at ' + url)
+    print('debug trace is on - every scan/read/wash step prints to this terminal')
     threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
