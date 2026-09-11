@@ -1,4 +1,4 @@
 class node:
-    def __init__(self, kind, **kw):
-        self.kind = kind
+    def __init__(self, tag, **kw):
+        self.kind = tag
         self.__dict__.update(kw)
