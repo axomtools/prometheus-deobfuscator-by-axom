@@ -1,4 +1,5 @@
 from node import node
+from trace import say
 
 words = {
     'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for',
@@ -7,13 +8,15 @@ words = {
 }
 
 symbols = [
-    '...', '..', '==', '~=', '<=', '>=', '::', '//', '<<', '>>',
+    '...', '..=', '..', '==', '~=', '<=', '>=', '::', '//', '<<', '>>',
+    '+=', '-=', '*=', '/=', '%=', '^=',
     '+', '-', '*', '/', '%', '^', '#', '<', '>', '=',
     '(', ')', '{', '}', '[', ']', ';', ':', ',', '.',
     '|', '&', '~',
 ]
 
-def unescape(text):
+
+def unescape(text, line, col):
     out = []
     i = 0
     size = len(text)
@@ -25,6 +28,7 @@ def unescape(text):
             continue
         i += 1
         if i >= size:
+            say('scan', 'dangling escape at line %d col %d' % (line, col))
             break
         c = text[i]
         if c == 'n':
@@ -60,6 +64,8 @@ def unescape(text):
                 h += text[i]; i += 1
             if h:
                 out.append(chr(int(h, 16)))
+            else:
+                say('scan', 'bad hex escape at line %d col %d' % (line, col))
         elif c.isdigit():
             d = ''
             while i < size and len(d) < 3 and text[i].isdigit():
@@ -162,10 +168,35 @@ def scan(src):
                 if src[j] == '\\':
                     j += 1
                 j += 1
+            if j >= size:
+                say('scan', 'unterminated string at line %d col %d' % (line, col))
             raw = src[i + 1:j]
-            toks.append(make('str', unescape(raw), line, col))
+            toks.append(make('str', unescape(raw, line, col), line, col))
             col += j - i + 1
             i = j + 1
+            continue
+        if c == '`':
+            j = i + 1
+            depth = 1
+            while j < size and depth > 0:
+                if src[j] == '\\':
+                    j += 2
+                    continue
+                if src[j] == '`':
+                    depth = 0
+                    j += 1
+                    break
+                if src[j] == '{':
+                    depth += 1
+                elif src[j] == '}':
+                    depth -= 1
+                j += 1
+            if j > size:
+                say('scan', 'unterminated backtick at line %d col %d' % (line, col))
+            raw = src[i + 1:j - 1]
+            toks.append(make('str', raw, line, col))
+            col += j - i
+            i = j
             continue
         if c == '[':
             j = i + 1
@@ -183,6 +214,7 @@ def scan(src):
                     col += k + len(close) - i
                     i = k + len(close)
                     continue
+                say('scan', 'unterminated long string at line %d col %d' % (line, col))
         hit = None
         for op in symbols:
             if src.startswith(op, i):
@@ -193,7 +225,9 @@ def scan(src):
             i += len(hit)
             col += len(hit)
             continue
+        say('scan', 'unknown char %r at line %d col %d' % (c, line, col))
         i += 1
         col += 1
     toks.append(make('eof', '', line, col))
+    say('scan', 'produced %d tokens' % len(toks))
     return toks
