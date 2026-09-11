@@ -1,5 +1,6 @@
 from node import node
 from scan import scan
+from trace import say
 
 bind = {
     'or': (1, 1),
@@ -15,6 +16,15 @@ bind = {
     '*': (11, 11), '/': (11, 11), '//': (11, 11), '%': (11, 11),
     '^': (14, 13),
 }
+
+assigns = {
+    '+=': '+', '-=': '-', '*=': '*',
+    '/=': '/', '%=': '%', '^=': '^', '..=': '..',
+}
+
+hints = {'end', 'local', 'if', 'for', 'while', 'return',
+         'function', 'do', 'repeat', 'break', 'continue', 'else', 'elseif'}
+
 
 class feed:
     def __init__(self, toks):
@@ -42,15 +52,38 @@ class feed:
     def eat(self, word):
         if not self.isop(word):
             item = self.peek()
-            raise SyntaxError('want %s got %s at line %s' % (word, item.value, item.line))
+            raise SyntaxError('want %s got %s at line %s col %s' % (word, item.value, item.line, item.col))
         return self.next()
 
     def call(self):
         item = self.peek()
         if item.kind != 'name':
-            raise SyntaxError('want name got %s at line %s' % (item.value, item.line))
+            raise SyntaxError('want name got %s at line %s col %s' % (item.value, item.line, item.col))
         self.next()
         return item.value
+
+
+def skipnote(reader):
+    if reader.isop(':'):
+        reader.next()
+        depth = 0
+        while True:
+            item = reader.peek()
+            if item.kind == 'eof':
+                break
+            if item.kind == 'word' and item.value in hints and depth == 0:
+                break
+            if item.kind == 'sym':
+                if item.value in ('(', '{', '['):
+                    depth += 1
+                elif item.value in (')', '}', ']'):
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif item.value in ('=', ',') and depth == 0:
+                    break
+            reader.next()
+        say('read', 'skipped type note')
 
 
 def parse(src):
@@ -58,7 +91,9 @@ def parse(src):
         toks = scan(src)
     else:
         toks = src
-    return block(feed(toks))
+    tree = block(feed(toks))
+    say('read', 'parsed root block with %d statements' % len(tree.stmts))
+    return tree
 
 
 def block(reader):
@@ -78,14 +113,14 @@ def block(reader):
             nxt = reader.peek()
             ok = nxt.kind == 'eof' or (nxt.kind == 'word' and nxt.value in ('end', 'else', 'elseif', 'until'))
             if not ok:
-                exprs = list(reader)
+                exprs = listing(reader)
             stmts.append(node('ret', exprs=exprs))
             break
         stmts.append(statement(reader))
     return node('blk', stmts=stmts)
 
 
-def list(reader):
+def listing(reader):
     items = [expr(reader)]
     while reader.isop(','):
         reader.next()
@@ -101,6 +136,14 @@ def expr(reader, limit=0):
     if item.kind == 'sym' and item.value in ('-', '#', '~'):
         reader.next()
         return node('un', op=item.value, arg=expr(reader, 11))
+    if item.kind == 'word' and item.value == 'if':
+        reader.next()
+        cond = expr(reader)
+        reader.eat('then')
+        yes = expr(reader)
+        reader.eat('else')
+        no = expr(reader)
+        return node('ifexp', cond=cond, yes=yes, no=no)
     left = atom(reader)
     while True:
         item = reader.peek()
@@ -152,7 +195,7 @@ def atom(reader):
         return node('pare', exp=inner)
     if item.kind == 'sym' and item.value == '{':
         return maker(reader)
-    raise SyntaxError('unexp %s at line %s' % (item.value, item.line))
+    raise SyntaxError('unexp %s at line %s col %s' % (item.value, item.line, item.col))
 
 
 def funcbody(reader):
@@ -164,11 +207,14 @@ def funcbody(reader):
                 reader.next()
                 params.append('...')
                 break
-            params.append(reader.call())
+            name = reader.call()
+            skipnote(reader)
+            params.append(name)
             if not reader.isop(','):
                 break
             reader.next()
     reader.eat(')')
+    skipnote(reader)
     body = block(reader)
     reader.eat('end')
     return node('func', params=params, body=body)
@@ -222,7 +268,7 @@ def prefix(reader):
             if reader.isop('('):
                 reader.next()
                 if not reader.isop(')'):
-                    args = list(reader)
+                    args = listing(reader)
                 reader.eat(')')
             else:
                 args = [tail(reader)]
@@ -232,7 +278,7 @@ def prefix(reader):
             reader.next()
             args = []
             if not reader.isop(')'):
-                args = list(reader)
+                args = listing(reader)
             reader.eat(')')
             inner = node('call', base=inner, args=args)
             continue
@@ -268,13 +314,15 @@ def statement(reader):
                 fb = funcbody(reader)
                 return node('localfunc', name=name, params=fb.params, body=fb.body)
             names = [reader.call()]
+            skipnote(reader)
             while reader.isop(','):
                 reader.next()
                 names.append(reader.call())
+                skipnote(reader)
             exprs = []
             if reader.isop('='):
                 reader.next()
-                exprs = list(reader)
+                exprs = listing(reader)
             return node('local', names=names, exprs=exprs)
         if item.value == 'function':
             reader.next()
@@ -308,6 +356,7 @@ def statement(reader):
         if item.value == 'for':
             reader.next()
             first = reader.call()
+            skipnote(reader)
             if reader.isop('='):
                 reader.next()
                 start = expr(reader)
@@ -325,8 +374,9 @@ def statement(reader):
             while reader.isop(','):
                 reader.next()
                 names.append(reader.call())
+                skipnote(reader)
             reader.eat('in')
-            exprs = list(reader)
+            exprs = listing(reader)
             reader.eat('do')
             body = block(reader)
             reader.eat('end')
@@ -348,7 +398,7 @@ def statement(reader):
             nxt = reader.peek()
             ok = nxt.kind == 'eof' or (nxt.kind == 'word' and nxt.value in ('end', 'else', 'elseif', 'until'))
             if not ok:
-                exprs = list(reader)
+                exprs = listing(reader)
             return node('ret', exprs=exprs)
         if item.value == 'break':
             reader.next()
@@ -366,12 +416,18 @@ def statement(reader):
         reader.eat('::')
         return node('label', name=name)
     head = prefix(reader)
+    item = reader.peek()
+    if item.kind == 'sym' and item.value in assigns:
+        reader.next()
+        right = expr(reader)
+        op = assigns[item.value]
+        return node('assign', targets=[head], exprs=[node('bin', op=op, left=head, right=right)])
     if reader.isop('=') or reader.isop(','):
         targets = [head]
         while reader.isop(','):
             reader.next()
             targets.append(prefix(reader))
         reader.eat('=')
-        exprs = list(reader)
+        exprs = listing(reader)
         return node('assign', targets=targets, exprs=exprs)
     return node('callstat', exp=head)
