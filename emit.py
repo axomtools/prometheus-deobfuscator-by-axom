@@ -14,6 +14,7 @@ rank = {
 
 right = {'..', '^'}
 
+
 def escape(text):
     out = []
     for c in text:
@@ -71,6 +72,11 @@ def emit(tree, depth=0, limit=0):
         if tree.otherwise is not None:
             text += '\n' + pad + 'else\n' + emit(tree.otherwise, depth + 1, 0)
         text += '\n' + pad + 'end'
+        return text
+    if kind == 'ifexp':
+        text = 'if ' + emit(tree.cond, 0, 0) + ' then ' + emit(tree.yes, 0, 0) + ' else ' + emit(tree.no, 0, 0)
+        if 1 < limit:
+            return '(' + text + ')'
         return text
     if kind == 'while':
         return pad + 'while ' + emit(tree.cond, 0, 0) + ' do\n' + emit(tree.body, depth + 1, 0) + '\n' + pad + 'end'
