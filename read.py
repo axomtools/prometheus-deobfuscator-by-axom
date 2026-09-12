@@ -30,6 +30,7 @@ class feed:
     def __init__(self, toks):
         self.toks = toks
         self.pos = 0
+        self.recent = []
 
     def peek(self):
         return self.toks[self.pos]
@@ -37,6 +38,9 @@ class feed:
     def next(self):
         item = self.toks[self.pos]
         self.pos += 1
+        self.recent.append(item)
+        if len(self.recent) > 16:
+            self.recent.pop(0)
         return item
 
     def far(self, off):
@@ -49,15 +53,27 @@ class feed:
         item = self.peek()
         return item.kind in ('word', 'sym') and item.value == word
 
+    def dump(self, why):
+        say('read', 'parser stopped: ' + why)
+        start = max(0, self.pos - 12)
+        stop = min(len(self.toks), self.pos + 6)
+        for i in range(start, stop):
+            t = self.toks[i]
+            marker = ' <--' if i == self.pos else ''
+            text = t.value if isinstance(t.value, str) else repr(t.value)
+            say('read', '  [%d] %s %r line %d col %d%s' % (i, t.kind, text, t.line, t.col, marker))
+
     def eat(self, word):
         if not self.isop(word):
             item = self.peek()
+            self.dump('want %r got %r' % (word, item.value))
             raise SyntaxError('want %s got %s at line %s col %s' % (word, item.value, item.line, item.col))
         return self.next()
 
     def call(self):
         item = self.peek()
         if item.kind != 'name':
+            self.dump('want name got %r' % item.value)
             raise SyntaxError('want name got %s at line %s col %s' % (item.value, item.line, item.col))
         self.next()
         return item.value
@@ -91,7 +107,8 @@ def parse(src):
         toks = scan(src)
     else:
         toks = src
-    tree = block(feed(toks))
+    reader = feed(toks)
+    tree = block(reader)
     say('read', 'parsed root block with %d statements' % len(tree.stmts))
     return tree
 
@@ -132,19 +149,20 @@ def expr(reader, limit=0):
     item = reader.peek()
     if item.kind == 'word' and item.value == 'not':
         reader.next()
-        return node('un', op='not', arg=expr(reader, 11))
-    if item.kind == 'sym' and item.value in ('-', '#', '~'):
+        left = node('un', op='not', arg=expr(reader, 12))
+    elif item.kind == 'sym' and item.value in ('-', '#', '~'):
         reader.next()
-        return node('un', op=item.value, arg=expr(reader, 11))
-    if item.kind == 'word' and item.value == 'if':
+        left = node('un', op=item.value, arg=expr(reader, 12))
+    elif item.kind == 'word' and item.value == 'if':
         reader.next()
         cond = expr(reader)
         reader.eat('then')
         yes = expr(reader)
         reader.eat('else')
         no = expr(reader)
-        return node('ifexp', cond=cond, yes=yes, no=no)
-    left = atom(reader)
+        left = node('ifexp', cond=cond, yes=yes, no=no)
+    else:
+        left = prefix(reader)
     while True:
         item = reader.peek()
         if item.kind not in ('sym', 'word'):
@@ -195,6 +213,7 @@ def atom(reader):
         return node('pare', exp=inner)
     if item.kind == 'sym' and item.value == '{':
         return maker(reader)
+    reader.dump('unexpected token in expression: %r' % item.value)
     raise SyntaxError('unexp %s at line %s col %s' % (item.value, item.line, item.col))
 
 
