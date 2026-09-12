@@ -1,4 +1,5 @@
 import math
+from node import node
 
 class fall(Exception):
     pass
@@ -336,6 +337,25 @@ def load(env):
         env.make(name, lib)
 
 
+def multi(e, env, budget):
+    v = grab(e, env, budget)
+    if isinstance(v, tuple):
+        return list(v)
+    return [v]
+
+
+def spread(exprs, env, budget):
+    out = []
+    total = len(exprs)
+    for i, e in enumerate(exprs):
+        part = multi(e, env, budget)
+        if i < total - 1:
+            out.append(part[0] if part else None)
+        else:
+            out.extend(part)
+    return out
+
+
 def run(body, env, budget):
     for stmt in body.stmts:
         one(stmt, env, budget)
@@ -348,7 +368,7 @@ def one(n, env, budget):
         raise fall('budget')
     kind = n.kind
     if kind == 'local':
-        vals = [grab(e, env, budget) for e in n.exprs]
+        vals = spread(n.exprs, env, budget)
         while len(vals) < len(n.names):
             vals.append(None)
         for nm, vl in zip(n.names, vals):
@@ -373,7 +393,7 @@ def one(n, env, budget):
                 infos.append(('idx', None, base, kk))
             else:
                 raise fall('assign target')
-        vals = [grab(e, env, budget) for e in n.exprs]
+        vals = spread(n.exprs, env, budget)
         while len(vals) < len(infos):
             vals.append(None)
         for info, vl in zip(infos, vals):
@@ -449,7 +469,7 @@ def one(n, env, budget):
             x = x + c
         return
     if kind == 'forgen':
-        vals = [grab(e, env, budget) for e in n.exprs]
+        vals = spread(n.exprs, env, budget)
         if not vals or not callable(vals[0]):
             raise fall('forgen')
         it = vals[0]
@@ -653,7 +673,7 @@ def docall(n, env, budget):
 def fire(val, args, budget):
     if callable(val):
         return val(args)
-    if isinstance(val, tuple) and val[0] == 'func':
+    if isinstance(val, tuple) and val and val[0] == 'func':
         return runclosure(val[1], val[2], args, budget)
     raise fall('fire')
 
