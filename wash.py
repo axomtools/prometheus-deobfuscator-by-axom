@@ -62,6 +62,70 @@ def locate(tree):
     return fn.body
 
 
+def simple(v):
+    if v is None:
+        return True
+    if isinstance(v, (bool, int, float, str)):
+        return True
+    return False
+
+
+def plain(v):
+    if v is None:
+        return node('nil')
+    if isinstance(v, bool):
+        return node('true' if v else 'false')
+    if isinstance(v, int):
+        return node('num', val=str(v))
+    if isinstance(v, float):
+        return node('num', val=repr(v))
+    return node('str', val=v)
+
+
+def rewrite(tree, env):
+    count = [0]
+
+    def visit(n):
+        if n.kind != 'local':
+            return
+        for i, name in enumerate(n.names):
+            if i >= len(n.exprs):
+                continue
+            ex = n.exprs[i]
+            if ex.kind != 'table':
+                continue
+            if name not in env.map:
+                continue
+            val = env.map[name]
+            if not isinstance(val, list):
+                continue
+            if not val:
+                continue
+            if not all(simple(v) for v in val):
+                continue
+            items = [('val', plain(v)) for v in val]
+            n.exprs[i] = node('table', items=items)
+            count[0] += 1
+
+    walk(tree, visit)
+    return count[0]
+
+
+def uses(tree, name):
+    hits = [0]
+
+    def visit(n):
+        if n.kind == 'call' and n.base.kind == 'name' and n.base.name == name:
+            hits[0] += 1
+        elif n.kind == 'mcall' and n.base.kind == 'name' and n.base.name == name:
+            hits[0] += 1
+        elif n.kind == 'name' and n.name == name:
+            hits[0] += 1
+
+    walk(tree, visit)
+    return hits[0]
+
+
 def decrypt(tree):
     env = space()
     load(env)
@@ -86,6 +150,9 @@ def decrypt(tree):
             say('wash', 'setup %d raised %s: %s' % (ran, e.__class__.__name__, e))
         ran += 1
     say('wash', 'ran %d statements, %d budget left' % (ran, running[0]))
+
+    n = rewrite(tree, env)
+    say('wash', 'rewrote %d tables with decoded contents' % n)
 
     names = set()
     for key, val in env.map.items():
@@ -124,6 +191,21 @@ def decrypt(tree):
 
     tree = rebuild(tree)
     say('wash', 'replaced %d calls with literals' % hits[0])
+
+    kept = []
+    dropped = 0
+    for stmt in setup.stmts:
+        if stmt.kind == 'localfunc' and stmt.name in names:
+            probe = node('blk', stmts=[s for s in setup.stmts if s is not stmt])
+            if uses(probe, stmt.name) == 0:
+                say('wash', 'dropping dead function %s' % stmt.name)
+                dropped += 1
+                continue
+        kept.append(stmt)
+    setup.stmts = kept
+    if dropped:
+        say('wash', 'dropped %d dead statements' % dropped)
+
     return tree
 
 
