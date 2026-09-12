@@ -1,233 +1,452 @@
 from node import node
+from scan import scan
 from trace import say
 
-words = {
-    'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for',
-    'function', 'goto', 'if', 'in', 'local', 'nil', 'not', 'or',
-    'repeat', 'return', 'then', 'true', 'until', 'while', 'continue',
+bind = {
+    'or': (1, 1),
+    'and': (2, 2),
+    '<': (3, 3), '>': (3, 3), '<=': (3, 3), '>=': (3, 3),
+    '~=': (3, 3), '==': (3, 3),
+    '|': (4, 4),
+    '~': (5, 5),
+    '&': (6, 6),
+    '<<': (7, 7), '>>': (7, 7),
+    '..': (9, 8),
+    '+': (10, 10), '-': (10, 10),
+    '*': (11, 11), '/': (11, 11), '//': (11, 11), '%': (11, 11),
+    '^': (14, 13),
 }
 
-symbols = [
-    '...', '..=', '..', '==', '~=', '<=', '>=', '::', '//', '<<', '>>',
-    '+=', '-=', '*=', '/=', '%=', '^=',
-    '+', '-', '*', '/', '%', '^', '#', '<', '>', '=',
-    '(', ')', '{', '}', '[', ']', ';', ':', ',', '.',
-    '|', '&', '~',
-]
+assigns = {
+    '+=': '+', '-=': '-', '*=': '*',
+    '/=': '/', '%=': '%', '^=': '^', '..=': '..',
+}
+
+hints = {'end', 'local', 'if', 'for', 'while', 'return',
+         'function', 'do', 'repeat', 'break', 'continue', 'else', 'elseif'}
 
 
-def unescape(text, line, col):
-    out = []
-    i = 0
-    size = len(text)
-    while i < size:
-        c = text[i]
-        if c != '\\':
-            out.append(c)
-            i += 1
-            continue
-        i += 1
-        if i >= size:
-            say('scan', 'dangling escape at line %d col %d' % (line, col))
-            break
-        c = text[i]
-        if c == 'n':
-            out.append('\n'); i += 1
-        elif c == 'r':
-            out.append('\r'); i += 1
-        elif c == 't':
-            out.append('\t'); i += 1
-        elif c == 'a':
-            out.append('\a'); i += 1
-        elif c == 'b':
-            out.append('\b'); i += 1
-        elif c == 'f':
-            out.append('\f'); i += 1
-        elif c == 'v':
-            out.append('\v'); i += 1
-        elif c == '\\':
-            out.append('\\'); i += 1
-        elif c == '"':
-            out.append('"'); i += 1
-        elif c == "'":
-            out.append("'"); i += 1
-        elif c == '\n':
-            out.append('\n'); i += 1
-        elif c == 'z':
-            i += 1
-            while i < size and text[i] in ' \t\r\n':
-                i += 1
-        elif c == 'x':
-            i += 1
-            h = ''
-            while i < size and len(h) < 2 and text[i] in '0123456789abcdefABCDEF':
-                h += text[i]; i += 1
-            if h:
-                out.append(chr(int(h, 16)))
-            else:
-                say('scan', 'bad hex escape at line %d col %d' % (line, col))
-        elif c.isdigit():
-            d = ''
-            while i < size and len(d) < 3 and text[i].isdigit():
-                d += text[i]; i += 1
-            out.append(chr(int(d)))
-        else:
-            out.append(c); i += 1
-    return ''.join(out)
+class feed:
+    def __init__(self, toks):
+        self.toks = toks
+        self.pos = 0
+        self.recent = []
+
+    def peek(self):
+        return self.toks[self.pos]
+
+    def next(self):
+        item = self.toks[self.pos]
+        self.pos += 1
+        self.recent.append(item)
+        if len(self.recent) > 16:
+            self.recent.pop(0)
+        return item
+
+    def far(self, off):
+        idx = self.pos + off
+        if idx < len(self.toks):
+            return self.toks[idx]
+        return self.toks[-1]
+
+    def isop(self, word):
+        item = self.peek()
+        return item.kind in ('word', 'sym') and item.value == word
+
+    def dump(self, why):
+        say('read', 'parser stopped: ' + why)
+        start = max(0, self.pos - 12)
+        stop = min(len(self.toks), self.pos + 6)
+        for i in range(start, stop):
+            t = self.toks[i]
+            marker = ' <--' if i == self.pos else ''
+            text = t.value if isinstance(t.value, str) else repr(t.value)
+            say('read', '  [%d] %s %r line %d col %d%s' % (i, t.kind, text, t.line, t.col, marker))
+
+    def eat(self, word):
+        if not self.isop(word):
+            item = self.peek()
+            self.dump('want %r got %r' % (word, item.value))
+            raise SyntaxError('want %s got %s at line %s col %s' % (word, item.value, item.line, item.col))
+        return self.next()
+
+    def call(self):
+        item = self.peek()
+        if item.kind != 'name':
+            self.dump('want name got %r' % item.value)
+            raise SyntaxError('want name got %s at line %s col %s' % (item.value, item.line, item.col))
+        self.next()
+        return item.value
 
 
-def unbracket(text):
-    if text.startswith('[['):
-        inner = text[2:-2]
+def skipnote(reader):
+    if reader.isop(':'):
+        reader.next()
+        depth = 0
+        while True:
+            item = reader.peek()
+            if item.kind == 'eof':
+                break
+            if item.kind == 'word' and item.value in hints and depth == 0:
+                break
+            if item.kind == 'sym':
+                if item.value in ('(', '{', '['):
+                    depth += 1
+                elif item.value in (')', '}', ']'):
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif item.value in ('=', ',') and depth == 0:
+                    break
+            reader.next()
+        say('read', 'skipped type note')
+
+
+def parse(src):
+    if isinstance(src, str):
+        toks = scan(src)
     else:
-        eq = 0
-        i = 1
-        while i < len(text) and text[i] == '=':
-            eq += 1
-            i += 1
-        inner = text[i + 1:-(eq + 2)]
-    if inner.startswith('\n'):
-        inner = inner[1:]
+        toks = src
+    reader = feed(toks)
+    tree = block(reader)
+    say('read', 'parsed root block with %d statements' % len(tree.stmts))
+    return tree
+
+
+def block(reader):
+    stmts = []
+    while True:
+        item = reader.peek()
+        if item.kind == 'eof':
+            break
+        if item.kind == 'word' and item.value in ('end', 'else', 'elseif', 'until'):
+            break
+        if item.kind == 'sym' and item.value == ';':
+            reader.next()
+            continue
+        if item.kind == 'word' and item.value == 'return':
+            reader.next()
+            exprs = []
+            nxt = reader.peek()
+            ok = nxt.kind == 'eof' or (nxt.kind == 'word' and nxt.value in ('end', 'else', 'elseif', 'until'))
+            if not ok:
+                exprs = listing(reader)
+            stmts.append(node('ret', exprs=exprs))
+            break
+        stmts.append(statement(reader))
+    return node('blk', stmts=stmts)
+
+
+def listing(reader):
+    items = [expr(reader)]
+    while reader.isop(','):
+        reader.next()
+        items.append(expr(reader))
+    return items
+
+
+def expr(reader, limit=0):
+    item = reader.peek()
+    if item.kind == 'word' and item.value == 'not':
+        reader.next()
+        left = node('un', op='not', arg=expr(reader, 12))
+    elif item.kind == 'sym' and item.value in ('-', '#', '~'):
+        reader.next()
+        left = node('un', op=item.value, arg=expr(reader, 12))
+    elif item.kind == 'word' and item.value == 'if':
+        reader.next()
+        cond = expr(reader)
+        reader.eat('then')
+        yes = expr(reader)
+        reader.eat('else')
+        no = expr(reader)
+        left = node('ifexp', cond=cond, yes=yes, no=no)
+    else:
+        left = prefix(reader)
+    while True:
+        item = reader.peek()
+        if item.kind not in ('sym', 'word'):
+            break
+        pair = bind.get(item.value)
+        if pair is None:
+            break
+        low, high = pair
+        if low <= limit:
+            break
+        reader.next()
+        right = expr(reader, high)
+        left = node('bin', op=item.value, left=left, right=right)
+    return left
+
+
+def atom(reader):
+    item = reader.peek()
+    if item.kind == 'num':
+        reader.next()
+        return node('num', val=item.value)
+    if item.kind == 'str':
+        reader.next()
+        return node('str', val=item.value)
+    if item.kind == 'word':
+        if item.value == 'nil':
+            reader.next()
+            return node('nil')
+        if item.value == 'true':
+            reader.next()
+            return node('true')
+        if item.value == 'false':
+            reader.next()
+            return node('false')
+        if item.value == 'function':
+            reader.next()
+            return funcbody(reader)
+    if item.kind == 'name':
+        reader.next()
+        return node('name', name=item.value)
+    if item.kind == 'sym' and item.value == '...':
+        reader.next()
+        return node('dots')
+    if item.kind == 'sym' and item.value == '(':
+        reader.next()
+        inner = expr(reader)
+        reader.eat(')')
+        return node('pare', exp=inner)
+    if item.kind == 'sym' and item.value == '{':
+        return maker(reader)
+    reader.dump('unexpected token in expression: %r' % item.value)
+    raise SyntaxError('unexp %s at line %s col %s' % (item.value, item.line, item.col))
+
+
+def funcbody(reader):
+    params = []
+    reader.eat('(')
+    if not reader.isop(')'):
+        while True:
+            if reader.isop('...'):
+                reader.next()
+                params.append('...')
+                break
+            name = reader.call()
+            skipnote(reader)
+            params.append(name)
+            if not reader.isop(','):
+                break
+            reader.next()
+    reader.eat(')')
+    skipnote(reader)
+    body = block(reader)
+    reader.eat('end')
+    return node('func', params=params, body=body)
+
+
+def maker(reader):
+    reader.eat('{')
+    items = []
+    while not reader.isop('}'):
+        item = reader.peek()
+        if item.kind == 'sym' and item.value == '[':
+            reader.next()
+            key = expr(reader)
+            reader.eat(']')
+            reader.eat('=')
+            val = expr(reader)
+            items.append(('key', key, val))
+        elif item.kind == 'name' and reader.far(1).kind == 'sym' and reader.far(1).value == '=':
+            name = reader.call()
+            reader.eat('=')
+            val = expr(reader)
+            items.append(('key', node('str', val=name), val))
+        else:
+            items.append(('val', expr(reader)))
+        if not (reader.isop(',') or reader.isop(';')):
+            break
+        reader.next()
+    reader.eat('}')
+    return node('table', items=items)
+
+
+def prefix(reader):
+    inner = atom(reader)
+    while True:
+        item = reader.peek()
+        if item.kind == 'sym' and item.value == '.':
+            reader.next()
+            name = reader.call()
+            inner = node('idx', base=inner, key=node('str', val=name))
+            continue
+        if item.kind == 'sym' and item.value == '[':
+            reader.next()
+            key = expr(reader)
+            reader.eat(']')
+            inner = node('idx', base=inner, key=key)
+            continue
+        if item.kind == 'sym' and item.value == ':':
+            reader.next()
+            name = reader.call()
+            args = []
+            if reader.isop('('):
+                reader.next()
+                if not reader.isop(')'):
+                    args = listing(reader)
+                reader.eat(')')
+            else:
+                args = [tail(reader)]
+            inner = node('mcall', base=inner, name=name, args=args)
+            continue
+        if item.kind == 'sym' and item.value == '(':
+            reader.next()
+            args = []
+            if not reader.isop(')'):
+                args = listing(reader)
+            reader.eat(')')
+            inner = node('call', base=inner, args=args)
+            continue
+        if item.kind == 'sym' and item.value == '{':
+            args = [maker(reader)]
+            inner = node('call', base=inner, args=args)
+            continue
+        if item.kind == 'str':
+            args = [atom(reader)]
+            inner = node('call', base=inner, args=args)
+            continue
+        break
     return inner
 
 
-def make(kind, value, line, col):
-    return node('tok', kind=kind, value=value, line=line, col=col)
+def tail(reader):
+    item = reader.peek()
+    if item.kind == 'sym' and item.value == '{':
+        return maker(reader)
+    if item.kind == 'str':
+        return atom(reader)
+    return atom(reader)
 
 
-def scan(src):
-    toks = []
-    i = 0
-    line = 1
-    col = 1
-    size = len(src)
-    while i < size:
-        c = src[i]
-        if c in ' \t\r':
-            i += 1
-            col += 1
-            continue
-        if c == '\n':
-            i += 1
-            line += 1
-            col = 1
-            continue
-        if c == '-' and i + 1 < size and src[i + 1] == '-':
-            i += 2
-            col += 2
-            if i < size and src[i] == '[':
-                j = i + 1
-                eq = 0
-                while j < size and src[j] == '=':
-                    eq += 1
-                    j += 1
-                if j < size and src[j] == '[':
-                    j += 1
-                    close = ']' + '=' * eq + ']'
-                    k = src.find(close, j)
-                    if k >= 0:
-                        i = k + len(close)
-                        col = 1
-                        continue
-            while i < size and src[i] != '\n':
-                i += 1
-            continue
-        if c.isalpha() or c == '_':
-            j = i
-            while j < size and (src[j].isalnum() or src[j] == '_'):
-                j += 1
-            w = src[i:j]
-            kind = 'word' if w in words else 'name'
-            toks.append(make(kind, w, line, col))
-            col += j - i
-            i = j
-            continue
-        if c.isdigit() or (c == '.' and i + 1 < size and src[i + 1].isdigit()):
-            j = i
-            if c == '0' and i + 1 < size and src[i + 1] in 'xX':
-                j = i + 2
-                while j < size and (src[j].isalnum() or src[j] == '.'):
-                    j += 1
-            else:
-                while j < size and (src[j].isdigit() or src[j] == '.'):
-                    j += 1
-                if j < size and src[j] in 'eE':
-                    j += 1
-                    if j < size and src[j] in '+-':
-                        j += 1
-                    while j < size and src[j].isdigit():
-                        j += 1
-            toks.append(make('num', src[i:j], line, col))
-            col += j - i
-            i = j
-            continue
-        if c == '"' or c == "'":
-            q = c
-            j = i + 1
-            while j < size and src[j] != q:
-                if src[j] == '\\':
-                    j += 1
-                j += 1
-            if j >= size:
-                say('scan', 'unterminated string at line %d col %d' % (line, col))
-            raw = src[i + 1:j]
-            toks.append(make('str', unescape(raw, line, col), line, col))
-            col += j - i + 1
-            i = j + 1
-            continue
-        if c == '`':
-            j = i + 1
-            depth = 1
-            while j < size and depth > 0:
-                if src[j] == '\\':
-                    j += 2
-                    continue
-                if src[j] == '`':
-                    depth = 0
-                    j += 1
-                    break
-                if src[j] == '{':
-                    depth += 1
-                elif src[j] == '}':
-                    depth -= 1
-                j += 1
-            if j > size:
-                say('scan', 'unterminated backtick at line %d col %d' % (line, col))
-            raw = src[i + 1:j - 1]
-            toks.append(make('str', raw, line, col))
-            col += j - i
-            i = j
-            continue
-        if c == '[':
-            j = i + 1
-            eq = 0
-            while j < size and src[j] == '=':
-                eq += 1
-                j += 1
-            if j < size and src[j] == '[':
-                j += 1
-                close = ']' + '=' * eq + ']'
-                k = src.find(close, j)
-                if k >= 0:
-                    raw = src[i:k + len(close)]
-                    toks.append(make('str', unbracket(raw), line, col))
-                    col += k + len(close) - i
-                    i = k + len(close)
-                    continue
-                say('scan', 'unterminated long string at line %d col %d' % (line, col))
-        hit = None
-        for op in symbols:
-            if src.startswith(op, i):
-                hit = op
-                break
-        if hit is not None:
-            toks.append(make('sym', hit, line, col))
-            i += len(hit)
-            col += len(hit)
-            continue
-        say('scan', 'unknown char %r at line %d col %d' % (c, line, col))
-        i += 1
-        col += 1
-    toks.append(make('eof', '', line, col))
-    say('scan', 'produced %d tokens' % len(toks))
-    return toks
+def statement(reader):
+    item = reader.peek()
+    if item.kind == 'word':
+        if item.value == 'local':
+            reader.next()
+            if reader.isop('function'):
+                reader.next()
+                name = reader.call()
+                fb = funcbody(reader)
+                return node('localfunc', name=name, params=fb.params, body=fb.body)
+            names = [reader.call()]
+            skipnote(reader)
+            while reader.isop(','):
+                reader.next()
+                names.append(reader.call())
+                skipnote(reader)
+            exprs = []
+            if reader.isop('='):
+                reader.next()
+                exprs = listing(reader)
+            return node('local', names=names, exprs=exprs)
+        if item.value == 'function':
+            reader.next()
+            name = reader.call()
+            fb = funcbody(reader)
+            return node('funcstat', name=name, params=fb.params, body=fb.body)
+        if item.value == 'if':
+            reader.next()
+            cond = expr(reader)
+            reader.eat('then')
+            body = block(reader)
+            chains = []
+            while reader.isop('elseif'):
+                reader.next()
+                c = expr(reader)
+                reader.eat('then')
+                chains.append((c, block(reader)))
+            otherwise = None
+            if reader.isop('else'):
+                reader.next()
+                otherwise = block(reader)
+            reader.eat('end')
+            return node('if', cond=cond, body=body, chains=chains, otherwise=otherwise)
+        if item.value == 'while':
+            reader.next()
+            cond = expr(reader)
+            reader.eat('do')
+            body = block(reader)
+            reader.eat('end')
+            return node('while', cond=cond, body=body)
+        if item.value == 'for':
+            reader.next()
+            first = reader.call()
+            skipnote(reader)
+            if reader.isop('='):
+                reader.next()
+                start = expr(reader)
+                reader.eat(',')
+                stop = expr(reader)
+                step = None
+                if reader.isop(','):
+                    reader.next()
+                    step = expr(reader)
+                reader.eat('do')
+                body = block(reader)
+                reader.eat('end')
+                return node('fornum', name=first, start=start, stop=stop, step=step, body=body)
+            names = [first]
+            while reader.isop(','):
+                reader.next()
+                names.append(reader.call())
+                skipnote(reader)
+            reader.eat('in')
+            exprs = listing(reader)
+            reader.eat('do')
+            body = block(reader)
+            reader.eat('end')
+            return node('forgen', names=names, exprs=exprs, body=body)
+        if item.value == 'repeat':
+            reader.next()
+            body = block(reader)
+            reader.eat('until')
+            cond = expr(reader)
+            return node('repeat', body=body, cond=cond)
+        if item.value == 'do':
+            reader.next()
+            body = block(reader)
+            reader.eat('end')
+            return node('do', body=body)
+        if item.value == 'return':
+            reader.next()
+            exprs = []
+            nxt = reader.peek()
+            ok = nxt.kind == 'eof' or (nxt.kind == 'word' and nxt.value in ('end', 'else', 'elseif', 'until'))
+            if not ok:
+                exprs = listing(reader)
+            return node('ret', exprs=exprs)
+        if item.value == 'break':
+            reader.next()
+            return node('break')
+        if item.value == 'continue':
+            reader.next()
+            return node('continue')
+        if item.value == 'goto':
+            reader.next()
+            name = reader.call()
+            return node('goto', name=name)
+    if item.kind == 'sym' and item.value == '::':
+        reader.next()
+        name = reader.call()
+        reader.eat('::')
+        return node('label', name=name)
+    head = prefix(reader)
+    item = reader.peek()
+    if item.kind == 'sym' and item.value in assigns:
+        reader.next()
+        right = expr(reader)
+        op = assigns[item.value]
+        return node('assign', targets=[head], exprs=[node('bin', op=op, left=head, right=right)])
+    if reader.isop('=') or reader.isop(','):
+        targets = [head]
+        while reader.isop(','):
+            reader.next()
+            targets.append(prefix(reader))
+        reader.eat('=')
+        exprs = listing(reader)
+        return node('assign', targets=targets, exprs=exprs)
+    return node('callstat', exp=head)
