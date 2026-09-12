@@ -146,6 +146,64 @@ def fcat(args):
     return sep.join(out)
 
 
+def finsert(args):
+    t = args[0]
+    if isinstance(t, list):
+        if len(args) == 2:
+            t.append(args[1])
+            return len(t)
+        if len(args) == 3:
+            pos = int(args[1])
+            t.insert(pos - 1, args[2])
+            return len(t)
+    return None
+
+
+def ftype(args):
+    v = args[0]
+    if v is None:
+        return 'nil'
+    if isinstance(v, bool):
+        return 'boolean'
+    if isinstance(v, (int, float)):
+        return 'number'
+    if isinstance(v, str):
+        return 'string'
+    if isinstance(v, (list, dict)):
+        return 'table'
+    if callable(v):
+        return 'function'
+    if isinstance(v, tuple) and v and v[0] == 'func':
+        return 'function'
+    return 'userdata'
+
+
+def ftostring(args):
+    v = args[0]
+    if v is None:
+        return 'nil'
+    if isinstance(v, bool):
+        return 'true' if v else 'false'
+    if isinstance(v, float):
+        if v == int(v):
+            return str(int(v))
+        return repr(v)
+    return str(v)
+
+
+def ftonumber(args):
+    v = args[0]
+    if isinstance(v, (int, float)):
+        return v
+    try:
+        return int(v)
+    except (ValueError, TypeError):
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return None
+
+
 def fbxor(args):
     r = 0
     for a in args:
@@ -213,6 +271,18 @@ def fipairs(args):
     return (iterfn, state, None)
 
 
+def fselect(args):
+    n = args[0]
+    rest = list(args[1:])
+    if n == '#':
+        return len(rest)
+    if isinstance(n, int):
+        if n < 0:
+            n = len(rest) + n + 1
+        return rest[n - 1] if 1 <= n <= len(rest) else None
+    return rest
+
+
 def mfloor(args):
     return math.floor(args[0])
 
@@ -239,7 +309,7 @@ libs = {
         'rep': frep, 'reverse': frev, 'len': flen,
         'lower': flow, 'upper': fup, 'format': ffmt,
     },
-    'table': {'concat': fcat},
+    'table': {'concat': fcat, 'insert': finsert},
     'math': {
         'floor': mfloor, 'ceil': mceil, 'abs': mabs,
         'max': mmax, 'min': mmin,
@@ -258,6 +328,10 @@ libs = {
 def load(env):
     env.make('pairs', fpairs)
     env.make('ipairs', fipairs)
+    env.make('type', ftype)
+    env.make('tostring', ftostring)
+    env.make('tonumber', ftonumber)
+    env.make('select', fselect)
     for name, lib in libs.items():
         env.make(name, lib)
 
@@ -280,43 +354,68 @@ def one(n, env, budget):
         for nm, vl in zip(n.names, vals):
             env.make(nm, vl)
         return
+    if kind == 'localfunc':
+        fn = node('func', params=n.params, body=n.body)
+        env.make(n.name, ('func', fn, env))
+        return
+    if kind == 'funcstat':
+        fn = node('func', params=n.params, body=n.body)
+        env.put(n.name, ('func', fn, env))
+        return
     if kind == 'assign':
-        vals = [grab(e, env, budget) for e in n.exprs]
-        while len(vals) < len(n.targets):
-            vals.append(None)
-        for tgt, vl in zip(n.targets, vals):
+        infos = []
+        for tgt in n.targets:
             if tgt.kind == 'name':
-                env.put(tgt.name, vl)
+                infos.append(('name', tgt.name, None, None))
             elif tgt.kind == 'idx':
                 base = grab(tgt.base, env, budget)
                 kk = grab(tgt.key, env, budget)
+                infos.append(('idx', None, base, kk))
+            else:
+                raise fall('assign target')
+        vals = [grab(e, env, budget) for e in n.exprs]
+        while len(vals) < len(infos):
+            vals.append(None)
+        for info, vl in zip(infos, vals):
+            if info[0] == 'name':
+                env.put(info[1], vl)
+            else:
+                base = info[2]
+                kk = info[3]
                 if isinstance(base, list):
-                    base[int(kk) - 1] = vl
+                    i = int(kk)
+                    if i < 1:
+                        i = len(base) + i + 1
+                    while len(base) < i:
+                        base.append(None)
+                    base[i - 1] = vl
                 elif isinstance(base, dict):
                     base[kk] = vl
-            else:
-                raise fall('assign')
         return
     if kind == 'ret':
         vals = [grab(e, env, budget) for e in n.exprs]
         raise jump('return', vals)
     if kind == 'if':
         if grab(n.cond, env, budget):
-            run(n.body, env, budget)
+            inner = space(env)
+            run(n.body, inner, budget)
         else:
             done = False
             for cond, body in n.chains:
                 if grab(cond, env, budget):
-                    run(body, env, budget)
+                    inner = space(env)
+                    run(body, inner, budget)
                     done = True
                     break
             if not done and n.otherwise is not None:
-                run(n.otherwise, env, budget)
+                inner = space(env)
+                run(n.otherwise, inner, budget)
         return
     if kind == 'while':
         while grab(n.cond, env, budget):
+            inner = space(env)
             try:
-                run(n.body, env, budget)
+                run(n.body, inner, budget)
             except jump as j:
                 if j.what == 'break':
                     break
@@ -328,11 +427,18 @@ def one(n, env, budget):
         a = grab(n.start, env, budget)
         b = grab(n.stop, env, budget)
         c = grab(n.step, env, budget) if n.step is not None else 1
+        if not isinstance(a, (int, float)):
+            raise fall('fornum start')
+        if not isinstance(b, (int, float)):
+            raise fall('fornum stop')
+        if not isinstance(c, (int, float)):
+            raise fall('fornum step')
         x = a
         while (c > 0 and x <= b) or (c < 0 and x >= b):
-            env.make(n.name, x)
+            inner = space(env)
+            inner.make(n.name, x)
             try:
-                run(n.body, env, budget)
+                run(n.body, inner, budget)
             except jump as j:
                 if j.what == 'break':
                     break
@@ -345,7 +451,7 @@ def one(n, env, budget):
     if kind == 'forgen':
         vals = [grab(e, env, budget) for e in n.exprs]
         if not vals or not callable(vals[0]):
-            raise fall('for')
+            raise fall('forgen')
         it = vals[0]
         st = vals[1] if len(vals) > 1 else None
         ctrl = vals[2] if len(vals) > 2 else None
@@ -353,13 +459,16 @@ def one(n, env, budget):
             got = it(st, ctrl)
             if got is None:
                 break
+            inner = space(env)
             if isinstance(got, tuple):
                 for nm, vv in zip(n.names, got):
-                    env.make(nm, vv)
+                    inner.make(nm, vv)
+                ctrl = got[0] if got else None
             else:
-                env.make(n.names[0], got)
+                inner.make(n.names[0], got)
+                ctrl = got
             try:
-                run(n.body, env, budget)
+                run(n.body, inner, budget)
             except jump as j:
                 if j.what == 'break':
                     break
@@ -372,7 +481,8 @@ def one(n, env, budget):
     if kind == 'continue':
         raise jump('continue')
     if kind == 'do':
-        run(n.body, env, budget)
+        inner = space(env)
+        run(n.body, inner, budget)
         return
     if kind == 'callstat':
         grab(n.exp, env, budget)
@@ -407,6 +517,10 @@ def grab(n, env, budget):
         return two(n, env, budget)
     if kind == 'un':
         return oneop(n, env, budget)
+    if kind == 'ifexp':
+        if grab(n.cond, env, budget):
+            return grab(n.yes, env, budget)
+        return grab(n.no, env, budget)
     if kind == 'idx':
         base = grab(n.base, env, budget)
         kk = grab(n.key, env, budget)
