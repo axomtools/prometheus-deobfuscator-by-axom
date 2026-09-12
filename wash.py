@@ -33,24 +33,52 @@ def unbox(tree):
     return tree
 
 
+def locate(tree):
+    if tree.kind != 'blk':
+        return None
+    if len(tree.stmts) != 1:
+        return None
+    s = tree.stmts[0]
+    if s.kind != 'ret' or len(s.exprs) != 1:
+        return None
+    e = s.exprs[0]
+    if e.kind != 'call' or e.base.kind != 'pare':
+        return None
+    fn = e.base.exp
+    if fn.kind != 'func' or fn.body.kind != 'blk':
+        return None
+    return fn.body
+
+
 def decrypt(tree):
     env = space()
     load(env)
+    env.make('...', [])
 
-    if tree.kind != 'blk':
+    setup = locate(tree)
+    if setup is None:
+        say('wash', 'no wrapper block found, nothing to run')
         return tree
 
-    running = [1000000]
+    say('wash', 'running %d setup statements' % len(setup.stmts))
+    running = [5000000]
     ran = 0
-    for stmt in tree.stmts:
+    for stmt in setup.stmts:
         if stmt.kind == 'ret':
-            continue
+            break
         try:
             one(stmt, env, running)
-            ran += 1
         except Exception as e:
-            say('wash', 'setup stmt %d raised %s: %s' % (ran, e.__class__.__name__, e))
-    say('wash', 'ran %d setup statements, budget left %d' % (ran, running[0]))
+            say('wash', 'setup %d raised %s: %s' % (ran, e.__class__.__name__, e))
+        ran += 1
+    say('wash', 'ran %d statements, %d budget left' % (ran, running[0]))
+
+    names = set()
+    for key, val in env.map.items():
+        if isinstance(val, tuple) and val and val[0] == 'func':
+            names.add(key)
+    if names:
+        say('wash', 'locals that are functions: %s' % ', '.join(sorted(names)))
 
     hits = [0]
 
@@ -62,9 +90,9 @@ def decrypt(tree):
                 setattr(n, key, rebuild(val))
             elif isinstance(val, list):
                 setattr(n, key, [rebuild(x) if isinstance(x, node) else x for x in val])
-        if n.kind == 'call' and n.base.kind == 'name':
+        if n.kind == 'call' and n.base.kind == 'name' and n.base.name in names:
             try:
-                val = grab(n, env, [2000])
+                val = grab(n, env, [20000])
             except Exception:
                 return n
             if isinstance(val, str):
@@ -80,10 +108,8 @@ def decrypt(tree):
                 return node('nil')
         return n
 
-    for i, stmt in enumerate(tree.stmts):
-        if stmt.kind == 'ret':
-            tree.stmts[i] = rebuild(stmt)
-    say('wash', 'replaced %d decoder calls' % hits[0])
+    tree = rebuild(tree)
+    say('wash', 'replaced %d calls with literals' % hits[0])
     return tree
 
 
