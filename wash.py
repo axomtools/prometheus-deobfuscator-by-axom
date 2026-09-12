@@ -1,6 +1,7 @@
 from node import node
 from step import walk
-from toy import space, load, grab, fire
+from toy import space, load, grab, fire, one
+from trace import say
 import unmask
 
 
@@ -15,6 +16,7 @@ def unbox(tree):
                     inner = call.base.exp
                     if inner.kind == 'func' and not inner.params:
                         tree.stmts = stmts[:-1] + inner.body.stmts
+                        say('wash', 'unboxed iife')
     for key, val in tree.__dict__.items():
         if key == 'kind':
             continue
@@ -34,29 +36,23 @@ def unbox(tree):
 def decrypt(tree):
     env = space()
     load(env)
-    fallback = None
-    if hasattr(tree, '__best_decoder__') and tree.__best_decoder__ is not None:
-        nm, fn, _ = tree.__best_decoder__
-        fallback = fn
 
-    def setup(n):
-        if n.kind == 'local':
-            for nm, ex in zip(n.names, n.exprs):
-                if ex.kind == 'func':
-                    env.make(nm, ('func', ex, env))
-                else:
-                    try:
-                        env.make(nm, grab(ex, env, [400]))
-                    except Exception:
-                        pass
-        if n.kind == 'localfunc':
-            fn = node('func', params=n.params, body=n.body)
-            env.make(n.name, ('func', fn, env))
-        if n.kind == 'funcstat':
-            fn = node('func', params=n.params, body=n.body)
-            env.make(n.name, ('func', fn, env))
+    if tree.kind != 'blk':
+        return tree
 
-    walk(tree, setup)
+    running = [1000000]
+    ran = 0
+    for stmt in tree.stmts:
+        if stmt.kind == 'ret':
+            continue
+        try:
+            one(stmt, env, running)
+            ran += 1
+        except Exception as e:
+            say('wash', 'setup stmt %d raised %s: %s' % (ran, e.__class__.__name__, e))
+    say('wash', 'ran %d setup statements, budget left %d' % (ran, running[0]))
+
+    hits = [0]
 
     def rebuild(n):
         for key, val in n.__dict__.items():
@@ -66,21 +62,13 @@ def decrypt(tree):
                 setattr(n, key, rebuild(val))
             elif isinstance(val, list):
                 setattr(n, key, [rebuild(x) if isinstance(x, node) else x for x in val])
-        if n.kind == 'call':
+        if n.kind == 'call' and n.base.kind == 'name':
             try:
-                val = grab(n, env, [800])
+                val = grab(n, env, [2000])
             except Exception:
-                if fallback is not None:
-                    try:
-                        args = []
-                        for a in n.args:
-                            args.append(grab(a, env, [400]))
-                        val = fire(('func', fallback, env), args, [400])
-                    except Exception:
-                        return n
-                else:
-                    return n
+                return n
             if isinstance(val, str):
+                hits[0] += 1
                 return node('str', val=val)
             if isinstance(val, bool):
                 return node('true' if val else 'false')
@@ -92,7 +80,11 @@ def decrypt(tree):
                 return node('nil')
         return n
 
-    return rebuild(tree)
+    for i, stmt in enumerate(tree.stmts):
+        if stmt.kind == 'ret':
+            tree.stmts[i] = rebuild(stmt)
+    say('wash', 'replaced %d decoder calls' % hits[0])
+    return tree
 
 
 def shrink(tree):
