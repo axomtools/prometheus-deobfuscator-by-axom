@@ -35,18 +35,30 @@ def unbox(tree):
 
 def locate(tree):
     if tree.kind != 'blk':
+        say('wash', 'locate: root is %s not blk' % tree.kind)
         return None
     if len(tree.stmts) != 1:
+        say('wash', 'locate: root has %d statements' % len(tree.stmts))
         return None
     s = tree.stmts[0]
     if s.kind != 'ret' or len(s.exprs) != 1:
+        say('wash', 'locate: root statement is %s' % s.kind)
         return None
     e = s.exprs[0]
-    if e.kind != 'call' or e.base.kind != 'pare':
+    if e.kind != 'call':
+        say('wash', 'locate: return expr is %s' % e.kind)
+        return None
+    if e.base.kind != 'pare':
+        say('wash', 'locate: call base is %s' % e.base.kind)
         return None
     fn = e.base.exp
-    if fn.kind != 'func' or fn.body.kind != 'blk':
+    if fn.kind != 'func':
+        say('wash', 'locate: paren contains %s' % fn.kind)
         return None
+    if fn.body.kind != 'blk':
+        say('wash', 'locate: func body is %s' % fn.body.kind)
+        return None
+    say('wash', 'locate: found wrapper body with %d statements' % len(fn.body.stmts))
     return fn.body
 
 
@@ -57,10 +69,12 @@ def decrypt(tree):
 
     setup = locate(tree)
     if setup is None:
-        say('wash', 'no wrapper block found, nothing to run')
+        say('wash', 'no wrapper block found')
         return tree
 
-    say('wash', 'running %d setup statements' % len(setup.stmts))
+    for i, stmt in enumerate(setup.stmts):
+        say('wash', '  setup [%d] %s' % (i, stmt.kind))
+
     running = [5000000]
     ran = 0
     for stmt in setup.stmts:
@@ -78,7 +92,7 @@ def decrypt(tree):
         if isinstance(val, tuple) and val and val[0] == 'func':
             names.add(key)
     if names:
-        say('wash', 'locals that are functions: %s' % ', '.join(sorted(names)))
+        say('wash', 'decoders available: %s' % ', '.join(sorted(names)))
 
     hits = [0]
 
