@@ -6,7 +6,7 @@ from rename import rename
 from trace import say, fail
 import unvm
 
-default = {name: True for name in ('unbox', 'shrink', 'unmask', 'decrypt', 'prune', 'squash')}
+default = {name: True for name in ('unbox', 'shrink', 'unmask', 'decrypt', 'strip', 'prune', 'squash')}
 
 
 def clean(src):
