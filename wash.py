@@ -5,6 +5,18 @@ from trace import say
 import unmask
 
 
+skip = {
+    'math', 'string', 'table', 'bit', 'bit32', 'os', 'debug', 'io',
+    'coroutine', 'utf8', 'type', 'typeof', 'tostring', 'tonumber',
+    'print', 'warn', 'pcall', 'xpcall', 'assert', 'error', 'select',
+    'getmetatable', 'setmetatable', 'rawequal', 'rawget', 'rawset',
+    'rawlen', 'ipairs', 'pairs', 'next', 'unpack', 'require',
+    'newproxy', 'getfenv', 'setfenv', 'getgenv', 'loadstring',
+    'load', 'collectgarbage', 'tick', 'time', 'wait', 'spawn',
+    'delay', 'settings',
+}
+
+
 def unbox(tree):
     if tree.kind == 'blk':
         stmts = tree.stmts
@@ -111,7 +123,7 @@ def rewrite(tree, env):
     return count[0]
 
 
-def uses(tree, name):
+def used(tree, name):
     hits = [0]
 
     def visit(n):
@@ -119,17 +131,70 @@ def uses(tree, name):
             hits[0] += 1
         elif n.kind == 'mcall' and n.base.kind == 'name' and n.base.name == name:
             hits[0] += 1
-        elif n.kind == 'name' and n.name == name:
-            hits[0] += 1
 
     walk(tree, visit)
     return hits[0]
+
+
+def isshuffle(n):
+    if n.kind != 'forgen':
+        return False
+    if len(n.exprs) != 1:
+        return False
+    e = n.exprs[0]
+    if e.kind != 'call':
+        return False
+    if e.base.kind != 'name':
+        return False
+    if e.base.name not in ('ipairs', 'pairs', 'next'):
+        return False
+    if len(e.args) != 1:
+        return False
+    if e.args[0].kind != 'table':
+        return False
+    if len(n.body.stmts) != 1:
+        return False
+    inner = n.body.stmts[0]
+    if inner.kind != 'while':
+        return False
+    return True
+
+
+def strip(tree):
+    if tree.kind == 'blk':
+        kept = []
+        for s in tree.stmts:
+            if isshuffle(s):
+                say('wash', 'stripped shuffle loop')
+                continue
+            kept.append(s)
+        tree.stmts = kept
+    for key, val in tree.__dict__.items():
+        if key == 'kind':
+            continue
+        if isinstance(val, node):
+            strip(val)
+        elif isinstance(val, list):
+            for item in val:
+                if isinstance(item, node):
+                    strip(item)
+                elif isinstance(item, tuple):
+                    for x in item:
+                        if isinstance(x, node):
+                            strip(x)
+    return tree
 
 
 def decrypt(tree):
     env = space()
     load(env)
     env.make('...', [])
+
+    top = None
+    if hasattr(tree, '__best_decoder__') and tree.__best_decoder__ is not None:
+        _, fn, tenv = tree.__best_decoder__
+        top = ('func', fn, tenv)
+        say('wash', 'top decoder from unmask')
 
     setup = locate(tree)
     if setup is None:
@@ -171,11 +236,18 @@ def decrypt(tree):
                 setattr(n, key, rebuild(val))
             elif isinstance(val, list):
                 setattr(n, key, [rebuild(x) if isinstance(x, node) else x for x in val])
-        if n.kind == 'call' and n.base.kind == 'name' and n.base.name in names:
-            try:
-                val = grab(n, env, [20000])
-            except Exception:
-                return n
+
+        if n.kind != 'call':
+            return n
+        if n.base.kind != 'name':
+            return n
+
+        nm = n.base.name
+        if nm in skip:
+            return n
+
+        try:
+            val = grab(n, env, [2000])
             if isinstance(val, str):
                 hits[0] += 1
                 return node('str', val=val)
@@ -187,6 +259,20 @@ def decrypt(tree):
                 return node('num', val=repr(val))
             if val is None:
                 return node('nil')
+        except Exception:
+            pass
+
+        if top is not None and len(n.args) == 1 and len(nm) <= 3:
+            try:
+                argval = grab(n.args[0], env, [500])
+                if isinstance(argval, (int, float)):
+                    res = fire(top, [argval], [500])
+                    if isinstance(res, str):
+                        hits[0] += 1
+                        return node('str', val=res)
+            except Exception:
+                pass
+
         return n
 
     tree = rebuild(tree)
@@ -196,8 +282,7 @@ def decrypt(tree):
     dropped = 0
     for stmt in setup.stmts:
         if stmt.kind == 'localfunc' and stmt.name in names:
-            probe = node('blk', stmts=[s for s in setup.stmts if s is not stmt])
-            if uses(probe, stmt.name) == 0:
+            if used(tree, stmt.name) == 0:
                 say('wash', 'dropping dead function %s' % stmt.name)
                 dropped += 1
                 continue
@@ -325,6 +410,8 @@ def wash(tree, opts):
         tree = unmask.tag(tree)
     if opts.get('decrypt', True):
         tree = decrypt(tree)
+    if opts.get('strip', True):
+        tree = strip(tree)
     if opts.get('prune', True):
         tree = prune(tree)
     if opts.get('squash', True):
