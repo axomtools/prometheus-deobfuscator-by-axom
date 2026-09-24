@@ -501,8 +501,7 @@ def one(n, env, budget):
     if kind == 'continue':
         raise jump('continue')
     if kind == 'do':
-        inner = space(env)
-        run(n.body, inner, budget)
+        run(n.body, env, budget)
         return
     if kind == 'callstat':
         grab(n.exp, env, budget)
