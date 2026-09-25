@@ -1,5 +1,5 @@
-from node import node
-from trace import say
+from syntax import node
+from log import say
 
 words = {
     'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for',
@@ -28,7 +28,6 @@ def unescape(text, line, col):
             continue
         i += 1
         if i >= size:
-            say('scan', 'dangling escape at line %d col %d' % (line, col))
             break
         c = text[i]
         if c == 'n':
@@ -64,8 +63,6 @@ def unescape(text, line, col):
                 h += text[i]; i += 1
             if h:
                 out.append(chr(int(h, 16)))
-            else:
-                say('scan', 'bad hex escape at line %d col %d' % (line, col))
         elif c.isdigit():
             d = ''
             while i < size and len(d) < 3 and text[i].isdigit():
@@ -168,8 +165,6 @@ def scan(src):
                 if src[j] == '\\':
                     j += 1
                 j += 1
-            if j >= size:
-                say('scan', 'unterminated string at line %d col %d' % (line, col))
             raw = src[i + 1:j]
             toks.append(make('str', unescape(raw, line, col), line, col))
             col += j - i + 1
@@ -191,8 +186,6 @@ def scan(src):
                 elif src[j] == '}':
                     depth -= 1
                 j += 1
-            if j > size:
-                say('scan', 'unterminated backtick at line %d col %d' % (line, col))
             raw = src[i + 1:j - 1]
             toks.append(make('str', raw, line, col))
             col += j - i
@@ -214,7 +207,6 @@ def scan(src):
                     col += k + len(close) - i
                     i = k + len(close)
                     continue
-                say('scan', 'unterminated long string at line %d col %d' % (line, col))
         hit = None
         for op in symbols:
             if src.startswith(op, i):
@@ -225,9 +217,7 @@ def scan(src):
             i += len(hit)
             col += len(hit)
             continue
-        say('scan', 'unknown char %r at line %d col %d' % (c, line, col))
         i += 1
         col += 1
     toks.append(make('eof', '', line, col))
-    say('scan', 'produced %d tokens' % len(toks))
     return toks
