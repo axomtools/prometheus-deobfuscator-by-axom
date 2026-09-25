@@ -1,6 +1,6 @@
-from node import node
-from scan import scan
-from trace import say
+from syntax import node
+from lexer import scan
+from log import say
 
 bind = {
     'or': (1, 1),
@@ -30,7 +30,6 @@ class feed:
     def __init__(self, toks):
         self.toks = toks
         self.pos = 0
-        self.recent = []
 
     def peek(self):
         return self.toks[self.pos]
@@ -38,9 +37,6 @@ class feed:
     def next(self):
         item = self.toks[self.pos]
         self.pos += 1
-        self.recent.append(item)
-        if len(self.recent) > 16:
-            self.recent.pop(0)
         return item
 
     def far(self, off):
@@ -55,13 +51,6 @@ class feed:
 
     def dump(self, why):
         say('read', 'parser stopped: ' + why)
-        start = max(0, self.pos - 12)
-        stop = min(len(self.toks), self.pos + 6)
-        for i in range(start, stop):
-            t = self.toks[i]
-            marker = ' <--' if i == self.pos else ''
-            text = t.value if isinstance(t.value, str) else repr(t.value)
-            say('read', '  [%d] %s %r line %d col %d%s' % (i, t.kind, text, t.line, t.col, marker))
 
     def eat(self, word):
         if not self.isop(word):
@@ -99,7 +88,6 @@ def skipnote(reader):
                 elif item.value in ('=', ',') and depth == 0:
                     break
             reader.next()
-        say('read', 'skipped type note')
 
 
 def parse(src):
