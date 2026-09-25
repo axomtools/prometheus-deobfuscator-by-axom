@@ -419,4 +419,55 @@ def attach(env):
     env.make('task', task)
     env.make('Enum', enum)
     env.make('workspace', workspace)
-    env.make('script', script
+    env.make('script', script)
+    for name, fn in seedmap.items():
+        env.make(name, fn)
+    env.make('math', {
+        'floor': lambda a: math.floor(a[0]),
+        'ceil': lambda a: math.ceil(a[0]),
+        'abs': lambda a: abs(a[0]),
+        'max': lambda a: max(a),
+        'min': lambda a: min(a),
+        'random': lambda a: 0,
+        'huge': float('inf'),
+        'pi': math.pi,
+    })
+    env.make('string', {
+        'char': lambda a: ''.join(chr(int(x) & 0xFF) for x in a),
+        'len': lambda a: len(a[0]),
+        'sub': lambda a: a[0][int(a[1]) - 1:int(a[2]) if len(a) > 2 else None],
+        'rep': lambda a: a[0] * int(a[1]),
+        'lower': lambda a: a[0].lower(),
+        'upper': lambda a: a[0].upper(),
+        'format': lambda a: a[0],
+        'reverse': lambda a: a[0][::-1],
+        'byte': lambda a: ord(a[0][0]) if a[0] else 0,
+    })
+    env.make('table', {
+        'insert': lambda a: (a[0].append(a[1]) if len(a) == 2 else a[0].insert(int(a[1]) - 1, a[2])),
+        'remove': lambda a: a[0].pop(int(a[1]) - 1) if len(a) > 1 else (a[0].pop() if a[0] else None),
+        'concat': lambda a: (a[1] if len(a) > 1 else '').join(str(x) for x in a[0]),
+        'unpack': lambda a: a[0],
+    })
+    env.make('bit32', {
+        'band': lambda a: a[0] & a[1],
+        'bor': lambda a: a[0] | a[1],
+        'bxor': lambda a: a[0] ^ a[1],
+        'bnot': lambda a: ~a[0] & 0xFFFFFFFF,
+        'lshift': lambda a: a[0] << a[1] & 0xFFFFFFFF,
+        'rshift': lambda a: a[0] >> a[1],
+    })
+    env.make('os', {
+        'time': lambda a: 0,
+        'clock': lambda a: 0,
+        'date': lambda a: '',
+    })
+    env.make('...', [])
+
+
+def reset():
+    log.clear()
+
+
+def build():
+    return '\n'.join(log)
