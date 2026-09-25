@@ -1,8 +1,9 @@
-from node import node
-from step import walk
-from toy import space, load, grab, fire, one
-from trace import say
-import unmask
+from syntax import node
+from walker import walk
+from interpreter import space, load, grab, fire, one, jump as hop
+from log import say
+import decoder
+import environment
 
 
 skip = {
@@ -47,30 +48,23 @@ def unbox(tree):
 
 def locate(tree):
     if tree.kind != 'blk':
-        say('wash', 'locate: root is %s not blk' % tree.kind)
         return None
     if len(tree.stmts) != 1:
-        say('wash', 'locate: root has %d statements' % len(tree.stmts))
         return None
     s = tree.stmts[0]
     if s.kind != 'ret' or len(s.exprs) != 1:
-        say('wash', 'locate: root statement is %s' % s.kind)
         return None
     e = s.exprs[0]
     if e.kind != 'call':
-        say('wash', 'locate: return expr is %s' % e.kind)
         return None
     if e.base.kind != 'pare':
-        say('wash', 'locate: call base is %s' % e.base.kind)
         return None
     fn = e.base.exp
     if fn.kind != 'func':
-        say('wash', 'locate: paren contains %s' % fn.kind)
         return None
     if fn.body.kind != 'blk':
-        say('wash', 'locate: func body is %s' % fn.body.kind)
         return None
-    say('wash', 'locate: found wrapper body with %d statements' % len(fn.body.stmts))
+    say('wash', 'wrapper has %d statements' % len(fn.body.stmts))
     return fn.body
 
 
@@ -188,7 +182,7 @@ def strip(tree):
 def decrypt(tree):
     env = space()
     load(env)
-    env.make('...', [])
+    environment.attach(env)
 
     top = None
     if hasattr(tree, '__best_decoder__') and tree.__best_decoder__ is not None:
@@ -201,32 +195,32 @@ def decrypt(tree):
         say('wash', 'no wrapper block found')
         return tree
 
-    for i, stmt in enumerate(setup.stmts):
-        say('wash', '  setup [%d] %s' % (i, stmt.kind))
-
-    running = [5000000]
+    running = [50000000]
     ran = 0
     for stmt in setup.stmts:
-        if stmt.kind == 'ret':
-            break
         try:
             one(stmt, env, running)
+        except hop as h:
+            if h.what == 'return':
+                say('wash', 'wrapper returned')
+            else:
+                raise
         except Exception as e:
-            say('wash', 'setup %d raised %s: %s' % (ran, e.__class__.__name__, e))
+            say('wash', 'stmt %d: %s: %s' % (ran, e.__class__.__name__, e))
         ran += 1
-    say('wash', 'ran %d statements, %d budget left' % (ran, running[0]))
+    say('wash', 'ran %d statements' % ran)
+    say('wash', 'captured %d interactions' % len(environment.log))
 
     n = rewrite(tree, env)
-    say('wash', 'rewrote %d tables with decoded contents' % n)
+    say('wash', 'rewrote %d tables' % n)
 
     names = set()
     for key, val in env.map.items():
         if isinstance(val, tuple) and val and val[0] == 'func':
             names.add(key)
-    if names:
-        say('wash', 'decoders available: %s' % ', '.join(sorted(names)))
 
     hits = [0]
+    alias = [0]
 
     def rebuild(n):
         for key, val in n.__dict__.items():
@@ -246,37 +240,50 @@ def decrypt(tree):
         if nm in skip:
             return n
 
-        try:
-            val = grab(n, env, [2000])
-            if isinstance(val, str):
-                hits[0] += 1
-                return node('str', val=val)
-            if isinstance(val, bool):
-                return node('true' if val else 'false')
-            if isinstance(val, int):
-                return node('num', val=str(val))
-            if isinstance(val, float):
-                return node('num', val=repr(val))
-            if val is None:
-                return node('nil')
-        except Exception:
-            pass
-
-        if top is not None and len(n.args) == 1 and len(nm) <= 3:
+        if nm in names:
             try:
-                argval = grab(n.args[0], env, [500])
-                if isinstance(argval, (int, float)):
-                    res = fire(top, [argval], [500])
-                    if isinstance(res, str):
-                        hits[0] += 1
-                        return node('str', val=res)
+                val = grab(n, env, [2000])
+                if isinstance(val, str):
+                    hits[0] += 1
+                    return node('str', val=val)
+                if isinstance(val, bool):
+                    return node('true' if val else 'false')
+                if isinstance(val, int):
+                    return node('num', val=str(val))
+                if isinstance(val, float):
+                    return node('num', val=repr(val))
+                if val is None:
+                    return node('nil')
             except Exception:
                 pass
+            return n
 
-        return n
+        if top is None:
+            return n
+        if len(n.args) != 1:
+            return n
+        if len(nm) > 3:
+            return n
+        try:
+            argval = grab(n.args[0], env, [500])
+        except Exception:
+            return n
+        if not isinstance(argval, (int, float)):
+            return n
+        if argval >= 0:
+            return n
+        try:
+            res = fire(top, [argval], [500])
+        except Exception:
+            return n
+        if not isinstance(res, str):
+            return n
+        alias[0] += 1
+        return node('str', val=res)
 
     tree = rebuild(tree)
-    say('wash', 'replaced %d calls with literals' % hits[0])
+    say('wash', 'replaced %d direct calls' % hits[0])
+    say('wash', 'resolved %d alias calls' % alias[0])
 
     kept = []
     dropped = 0
@@ -407,7 +414,7 @@ def wash(tree, opts):
     if opts.get('shrink', True):
         tree = shrink(tree)
     if opts.get('unmask', True):
-        tree = unmask.tag(tree)
+        tree = decoder.tag(tree)
     if opts.get('decrypt', True):
         tree = decrypt(tree)
     if opts.get('strip', True):
