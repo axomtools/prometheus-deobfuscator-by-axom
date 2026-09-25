@@ -1,4 +1,4 @@
-from node import node
+from syntax import node
 
 def walk(tree, visit):
     if isinstance(tree, node):
