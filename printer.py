@@ -1,5 +1,5 @@
 import re
-from scan import words
+from lexer import words
 
 ident = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
