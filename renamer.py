@@ -43,4 +43,682 @@ globalfunctions = {
 }
 
 methodnames = {
-    "Wait":"Elapsed","Connect":"Connection","Once":"Connection","Clone":"Clone","Destroy":"Destroyed","ClearAllChildren":"Cleared","GetChildren":"Children","GetDescendants":"Descendants","GetPlayers":"PlayerList","GetTagged":"Tagged","GetInstanceAddedSignal":"Signal","
+    "Wait":"Elapsed","Connect":"Connection","Once":"Connection","Clone":"Clone","Destroy":"Destroyed","ClearAllChildren":"Cleared","GetChildren":"Children","GetDescendants":"Descendants","GetPlayers":"PlayerList","GetTagged":"Tagged","GetInstanceAddedSignal":"Signal","GetInstanceRemovedSignal":"Signal","GetDataStore":"DataStore","GetOrderedDataStore":"OrderedDataStore","GetGlobalDataStore":"GlobalDataStore","GetCollisionGroupId":"GroupId","GetCollisionGroupName":"GroupName","CreatePath":"Path","Create":"Created","JSONEncode":"Json","JSONDecode":"Decoded","HttpGetAsync":"Response","HttpPostAsync":"Response","GetAsync":"Value","SetAsync":"Value","UpdateAsync":"Value","IncrementAsync":"Value","Kick":"Kicked","GetMouse":"Mouse","GetPropertyChangedSignal":"Signal","GetAttributeChangedSignal":"Signal","GetAttribute":"Value","SetAttribute":"Attribute","GetPivot":"Pivot","PivotTo":"Pivot","GetFullName":"FullName","GetDebugId":"DebugId","FindFirstAncestor":"Ancestor","FindFirstAncestorOfClass":"Ancestor","FindFirstAncestorWhichIsA":"Ancestor","IsA":"IsType","AddTag":"Tag","RemoveTag":"Tag","HasTag":"HasTag","GetTags":"Tags","WaitForChild":"Child","FindFirstChild":"Child","FindFirstChildOfClass":"Child","FindFirstChildWhichIsA":"Child","SetPrimaryPartCFrame":"Pivot","GetPrimaryPartCFrame":"Pivot","MoveTo":"Pivot","LoadCharacter":"Character","LoadCharacterWithHumanoidDescription":"Character","GetRankInGroup":"Rank","GetRoleInGroup":"Role","IsInGroup":"IsInGroup","IsFriendsWith":"IsFriend","GetFriendsAsync":"Friends","GetUserIdFromNameAsync":"UserId","GetNameFromUserIdAsync":"UserName","GetUserThumbnailAsync":"Thumbnail","GetProductInfo":"ProductInfo","UserOwnsGamePassAsync":"OwnsGamePass","PromptGamePassPurchase":"Prompt","PromptProductPurchase":"Prompt","PromptPurchase":"Prompt","GetDeveloperProductsAsync":"Products","GetStorePages":"Pages","GetService":"Service",
+}
+
+
+def normalizeclassname(name):
+    parts = re.split(r"[\s_\-]+", name)
+    return "".join(p[:1].upper() + p[1:] for p in parts if p)
+
+
+def isvalididentifier(s):
+    return bool(re.fullmatch(r"[A-Za-z_]\w*", s))
+
+
+def tocamel(name):
+    if not name:
+        return name
+    return name[0].lower() + name[1:]
+
+
+def joinsuffix(base, num):
+    if base and base[-1].isdigit():
+        return base + "_" + str(num)
+    return base + str(num)
+
+
+def striptrailingindex(e):
+    m = re.match(r'^(.*?)\s*\[[^\]]*\]\s*$', e)
+    if m:
+        prefix = m.group(1)
+        if '.' in prefix or ':' in prefix:
+            return prefix
+    return e
+
+
+def startswithname(text, name):
+    text = re.sub(r"--[^\n]*", "", text)
+    stripped = re.sub(r'"(?:\\.|[^"\\])*"', '""', text)
+    stripped = re.sub(r"'(?:\\.|[^'\\])*'", "''", stripped)
+    m = re.match(r'^\s*([A-Za-z_]\w*)', stripped)
+    return bool(m and m.group(1) == name)
+
+
+def readstmt(code, start):
+    i = start
+    n = len(code)
+    depth = 0
+    while i < n:
+        c = code[i]
+        if c == '"' or c == "'":
+            q = c
+            i += 1
+            while i < n and code[i] != q:
+                if code[i] == "\\" and i + 1 < n:
+                    i += 2
+                else:
+                    i += 1
+            if i < n:
+                i += 1
+            continue
+        if c == "-" and i + 1 < n and code[i + 1] == "-":
+            j = code.find("\n", i)
+            if j == -1:
+                i = n
+            else:
+                i = j
+            if depth == 0:
+                return code[start:i], i
+            continue
+        if c == "[" and i + 1 < n and (code[i + 1] == "[" or code[i + 1] == "="):
+            j = i + 1
+            eq = 0
+            while j < n and code[j] == "=":
+                eq += 1
+                j += 1
+            if j < n and code[j] == "[":
+                close = "]" + "=" * eq + "]"
+                end = code.find(close, j + 1)
+                i = n if end == -1 else end + len(close)
+                continue
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            if depth > 0:
+                depth -= 1
+        elif c == "\n" and depth == 0:
+            return code[start:i], i
+        i += 1
+    return code[start:n], n
+
+
+def splitcommas(text):
+    parts = []
+    depth = 0
+    last = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == '"' or c == "'":
+            q = c
+            i += 1
+            while i < n and text[i] != q:
+                if text[i] == "\\" and i + 1 < n:
+                    i += 2
+                else:
+                    i += 1
+            if i < n:
+                i += 1
+            continue
+        if c == "-" and i + 1 < n and text[i + 1] == "-":
+            j = text.find("\n", i)
+            i = n if j == -1 else j
+            continue
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            if depth > 0:
+                depth -= 1
+        elif c == "," and depth == 0:
+            parts.append(text[last:i])
+            last = i + 1
+        i += 1
+    parts.append(text[last:])
+    return parts
+
+
+def applymap(text, namemap):
+    if not namemap:
+        return text
+    result = []
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == '"' or c == "'":
+            start = i
+            q = c
+            i += 1
+            while i < n and text[i] != q:
+                if text[i] == "\\" and i + 1 < n:
+                    i += 2
+                else:
+                    i += 1
+            if i < n:
+                i += 1
+            result.append(text[start:i])
+            continue
+        if c == "-" and i + 1 < n and text[i + 1] == "-":
+            j = text.find("\n", i)
+            if j == -1:
+                j = n
+            result.append(text[i:j])
+            i = j
+            continue
+        if c.isalpha() or c == "_":
+            m = re.match(r"[A-Za-z_]\w*", text[i:])
+            word = m.group(0)
+            k = i - 1
+            while k >= 0 and text[k] in " \t\n\r":
+                k -= 1
+            isfield = k >= 0 and text[k] in ".:"
+            if not isfield and word in namemap:
+                result.append(namemap[word])
+            else:
+                result.append(word)
+            i += len(word)
+            continue
+        result.append(c)
+        i += 1
+    return "".join(result)
+
+
+def infername(expr):
+    e = re.sub(r"--[^\n]*", "", expr).strip()
+    if not e:
+        return None
+
+    m = re.match(r'^["\']([A-Za-z_][A-Za-z0-9_]*)["\']\s*$', e)
+    if m:
+        n = normalizeclassname(m.group(1))
+        return n if isvalididentifier(n) and n not in keywords else None
+
+    e = striptrailingindex(e)
+
+    m = re.match(r'^game\s*:\s*GetService\s*\(\s*["\']([^"\']+)["\']\s*\)\s*$', e)
+    if m:
+        n = normalizeclassname(m.group(1))
+        return n if isvalididentifier(n) and n not in keywords else None
+
+    m = re.search(r'[.:]\s*GetService\s*\(\s*["\']([^"\']+)["\']', e)
+    if m:
+        n = normalizeclassname(m.group(1))
+        return n if isvalididentifier(n) and n not in keywords else None
+
+    m = re.match(r'^Instance\s*\.\s*new\s*\(\s*["\']([^"\']+)["\']', e)
+    if m:
+        n = normalizeclassname(m.group(1))
+        return n if isvalididentifier(n) and n not in keywords else None
+
+    m = re.match(r'^Enum\s*\.\s*([A-Za-z_]\w*)\s*\.\s*([A-Za-z_]\w*)\s*$', e)
+    if m:
+        t, v = m.group(1), m.group(2)
+        n = (t + v) if len(v) <= 1 else v
+        return n if isvalididentifier(n) and n not in keywords else None
+
+    m = re.search(r'[.:]\s*(?:WaitForChild|FindFirstChild|FindFirstChildOfClass|FindFirstChildWhichIsA)\s*\(\s*["\']([^"\']+)["\']', e)
+    if m:
+        n = normalizeclassname(m.group(1))
+        return n if isvalididentifier(n) and n not in keywords else None
+
+    m = re.match(r'^([A-Z][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_]\w*)\s*\(', e)
+    if m:
+        dt, method = m.group(1), m.group(2)
+        if method == "new" or method.startswith("from") or method.startswith("look") or method == "Angles" or method == "identity":
+            n = dt
+        else:
+            n = normalizeclassname(method)
+        return n if isvalididentifier(n) and n not in keywords else None
+
+    m = re.match(r'^([A-Z][A-Za-z0-9_]*)\s*\.\s*([A-Za-z_]\w*)\s*$', e)
+    if m:
+        n = normalizeclassname(m.group(2))
+        return n if isvalididentifier(n) and n not in keywords else None
+
+    m = re.match(r'^([a-z_]\w*)\s*\.\s*([a-z_]\w*)\s*\(', e)
+    if m:
+        key = f"{m.group(1)}.{m.group(2)}"
+        if key in libmethods:
+            n = libmethods[key]
+            return n if isvalididentifier(n) and n not in keywords else None
+
+    m = re.match(r'^([a-z_]\w*)\s*\.\s*([a-z_]\w*)\s*$', e)
+    if m:
+        key = f"{m.group(1)}.{m.group(2)}"
+        if key in libmethods:
+            n = libmethods[key]
+            return n if isvalididentifier(n) and n not in keywords else None
+
+    m = re.match(r'^([A-Za-z_]\w*)\s*\(', e)
+    if m:
+        fn = m.group(1)
+        n = globalfunctions.get(fn, fn)
+        return n if isvalididentifier(n) and n not in keywords else None
+
+    methods = re.findall(r'[.:]\s*([A-Za-z_]\w*)\s*\(', e)
+    if methods:
+        method = methods[-1]
+        n = methodnames.get(method, normalizeclassname(method))
+        return n if isvalididentifier(n) and n not in keywords else None
+
+    m = re.match(r'^([A-Za-z_]\w*)\s*\+\s*([A-Za-z_]\w*)\s*$', e)
+    if m:
+        if m.group(1) == m.group(2):
+            return 'Doubled'
+        return 'Total'
+
+    m = re.match(r'^([A-Za-z_]\w*)\s*-\s*([A-Za-z_]\w*)\s*$', e)
+    if m:
+        return 'Diff'
+
+    m = re.match(r'^([A-Za-z_]\w*)\s*\*\s*([A-Za-z_]\w*)\s*$', e)
+    if m:
+        return 'Product'
+
+    m = re.match(r'^([A-Za-z_]\w*)\s*/\s*([A-Za-z_]\w*)\s*$', e)
+    if m:
+        return 'Ratio'
+
+    m = re.match(r'^([A-Za-z_]\w*)\s*%\s*([A-Za-z_]\w*)\s*$', e)
+    if m:
+        return 'Remainder'
+
+    m = re.match(r'^([A-Za-z_]\w*)\s*([<>]=?|==|~=)\s*([A-Za-z_]\w*)\s*$', e)
+    if m:
+        return 'Check'
+
+    m = re.match(r'^([A-Za-z_]\w*)\s+(and|or)\s+([A-Za-z_]\w*)\s*$', e)
+    if m:
+        return 'Flag'
+
+    m = re.match(r'^not\s+([A-Za-z_]\w*)\s*$', e)
+    if m:
+        return 'Inverse'
+
+    m = re.match(r'^-([A-Za-z_]\w*)\s*$', e)
+    if m:
+        return 'Negated'
+
+    m = re.match(r'^#([A-Za-z_]\w*)\s*$', e)
+    if m:
+        return 'Length'
+
+    m = re.match(r'^([A-Za-z_]\w*)\[([^\]]+)\]\s*$', e)
+    if m:
+        return 'Field'
+
+    m = re.search(r"\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*$", e)
+    if m:
+        field = m.group(1)
+        if field[0].islower():
+            n = field[0].upper() + field[1:]
+        else:
+            n = field
+        return n if isvalididentifier(n) and n not in keywords else None
+
+    m = re.search(r'\[\s*["\']([A-Za-z_][A-Za-z0-9_]*)["\']\s*\]\s*$', e)
+    if m:
+        field = m.group(1)
+        if field[0].islower():
+            n = field[0].upper() + field[1:]
+        else:
+            n = field
+        return n if isvalididentifier(n) and n not in keywords else None
+
+    m = re.match(r'^([a-zA-Z_]\w*)\s*$', e)
+    if m:
+        name = m.group(1)
+        if name in keywords:
+            return None
+        n = name[0].upper() + name[1:] if name[0].islower() else name
+        return n if isvalididentifier(n) and n not in keywords else None
+
+    return None
+
+
+def tokenize(code):
+    tokens = []
+    i = 0
+    n = len(code)
+    while i < n:
+        c = code[i]
+        if c in " \t\r\n":
+            i += 1
+            continue
+        if c == "-" and i + 1 < n and code[i + 1] == "-":
+            start = i
+            if i + 3 < n and code[i + 2] == "[" and code[i + 3] == "[":
+                end = code.find("]]", i + 4)
+                i = n if end == -1 else end + 2
+            else:
+                end = code.find("\n", i)
+                i = n if end == -1 else end
+            tokens.append(("comment", code[start:i], start, i))
+            continue
+        if c == '"' or c == "'":
+            start = i
+            q = c
+            i += 1
+            while i < n and code[i] != q:
+                if code[i] == "\\" and i + 1 < n:
+                    i += 2
+                else:
+                    i += 1
+            if i < n:
+                i += 1
+            tokens.append(("string", code[start:i], start, i))
+            continue
+        if c == "[" and i + 1 < n and (code[i + 1] == "[" or code[i + 1] == "="):
+            j = i + 1
+            eq = 0
+            while j < n and code[j] == "=":
+                eq += 1
+                j += 1
+            if j < n and code[j] == "[":
+                close = "]" + "=" * eq + "]"
+                end = code.find(close, j + 1)
+                stop = n if end == -1 else end + len(close)
+                tokens.append(("string", code[i:stop], i, stop))
+                i = stop
+                continue
+        if c.isalpha() or c == "_":
+            start = i
+            while i < n and (code[i].isalnum() or code[i] == "_"):
+                i += 1
+            word = code[start:i]
+            tokens.append(("kw" if word in keywords else "ident", word, start, i))
+            continue
+        if c.isdigit() or (c == "." and i + 1 < n and code[i + 1].isdigit()):
+            start = i
+            while i < n and (code[i].isalnum() or code[i] in "._"):
+                i += 1
+            tokens.append(("num", code[start:i], start, i))
+            continue
+        tokens.append(("op", c, i, i + 1))
+        i += 1
+    return tokens
+
+
+def findscopes(tokens):
+    scopes = []
+    stack = []
+    awaitingdo = False
+    for ti, tok in enumerate(tokens):
+        if tok[0] != "kw":
+            continue
+        w = tok[1]
+        if w in ("for", "while"):
+            awaitingdo = True
+            stack.append((ti, False, ti))
+        elif w == "do":
+            if awaitingdo:
+                awaitingdo = False
+            else:
+                stack.append((ti, False, ti))
+        elif w in ("function", "repeat"):
+            stack.append((ti, False, ti))
+        elif w == "if":
+            stack.append((ti, True, ti))
+        elif w in ("elseif", "else"):
+            if stack and stack[-1][1]:
+                openti, _, branchstart = stack.pop()
+                scopes.append((branchstart, ti))
+                stack.append((openti, True, ti))
+        elif w in ("end", "until"):
+            if stack:
+                openti, isif, branchstart = stack.pop()
+                scopes.append((branchstart, ti))
+    return scopes
+
+
+def collectassigns(tokens, code, n):
+    assigns = {}
+    ti = 0
+    while ti < n - 1:
+        tok = tokens[ti]
+        if tok[0] != "ident":
+            ti += 1
+            continue
+        op1 = tokens[ti + 1]
+        if op1[0] != "op" or op1[1] != "=":
+            ti += 1
+            continue
+        if ti + 2 < n and tokens[ti + 2][0] == "op" and tokens[ti + 2][1] == "=":
+            ti += 2
+            continue
+        if ti > 0:
+            prev = tokens[ti - 1]
+            if prev[0] == "kw" and prev[1] == "for":
+                ti += 1
+                continue
+            if prev[0] == "op" and prev[1] in ".:":
+                ti += 1
+                continue
+        rhsstart = op1[3]
+        rhstext, _ = readstmt(code, rhsstart)
+        assigns.setdefault(tok[1], []).append((ti, rhstext))
+        ti += 1
+    return assigns
+
+
+def renamecode(code, preserved=None):
+    preserved = preserved or set()
+    tokens = tokenize(code)
+    n = len(tokens)
+    if n == 0:
+        return code
+
+    scopes = findscopes(tokens)
+    scopes.sort()
+    scopestarts = [s[0] for s in scopes]
+
+    def scopeendfor(ti):
+        pos = bisect.bisect_right(scopestarts, ti) - 1
+        while pos >= 0:
+            s, e = scopes[pos]
+            if e > ti:
+                return e
+            pos -= 1
+        return n
+
+    def scopechainof(ti):
+        chain = [sid for sid, (s, e) in enumerate(scopes) if s <= ti < e]
+        chain.sort(key=lambda sid: scopes[sid][0])
+        return chain
+
+    assigns = collectassigns(tokens, code, n)
+    scopeused = {}
+
+    renames = []
+    ti = 0
+    while ti < n:
+        tok = tokens[ti]
+        if tok[0] == "kw" and tok[1] == "local":
+            names = []
+            j = ti + 1
+            while j < n:
+                t = tokens[j]
+                if t[0] == "ident":
+                    names.append((j, t[1]))
+                    j += 1
+                    if j < n and tokens[j][0] == "op" and tokens[j][1] == ",":
+                        j += 1
+                        continue
+                    else:
+                        break
+                else:
+                    break
+
+            if not names:
+                ti += 1
+                continue
+
+            haseq = j < n and tokens[j][0] == "op" and tokens[j][1] == "="
+
+            if haseq:
+                rhsstart = tokens[j][3]
+                rhstext, _ = readstmt(code, rhsstart)
+                rhsparts = splitcommas(rhstext)
+            else:
+                rhsparts = []
+
+            for idx, (nameti, oldname) in enumerate(names):
+                if oldname.startswith("_"):
+                    continue
+                if oldname in preserved:
+                    continue
+                if human(oldname):
+                    continue
+
+                rawname = None
+                swappedrhs = None
+
+                if haseq and idx < len(rhsparts):
+                    visible = {}
+                    for (on, nn, dt, et) in renames:
+                        if dt <= nameti < et:
+                            visible[on] = nn
+                    swappedrhs = applymap(rhsparts[idx], visible)
+                    rawname = infername(swappedrhs)
+
+                if not rawname:
+                    scopeendti = scopeendfor(nameti)
+                    for (ati, atext) in assigns.get(oldname, []):
+                        if ati > nameti and ati < scopeendti:
+                            visible = {}
+                            for (on, nn, dt, et) in renames:
+                                if dt <= ati < et:
+                                    visible[on] = nn
+                            swapped = applymap(atext, visible)
+                            cand = infername(swapped)
+                            if cand:
+                                rawname = cand
+                                swappedrhs = swapped
+                                break
+
+                if not rawname:
+                    continue
+
+                newname = tocamel(rawname)
+                shadow = startswithname(swappedrhs, rawname)
+
+                if newname == oldname and not shadow:
+                    continue
+
+                chain = scopechainof(nameti)
+                seenchain = set(scopeused.get(-1, set()))
+                for sid in chain:
+                    seenchain |= scopeused.get(sid, set())
+
+                if shadow:
+                    candidate = joinsuffix(newname, 2)
+                    suffix = 3
+                else:
+                    candidate = newname
+                    suffix = 2
+                while candidate in seenchain or candidate == oldname:
+                    candidate = joinsuffix(newname, suffix)
+                    suffix += 1
+                if candidate == oldname:
+                    continue
+
+                if chain:
+                    innermost = chain[-1]
+                else:
+                    innermost = -1
+                scopeused.setdefault(innermost, set()).add(candidate)
+
+                scopeendti = scopeendfor(nameti)
+                renames.append((oldname, candidate, nameti, scopeendti))
+
+        ti += 1
+
+    if not renames:
+        return code
+
+    byname = {}
+    for oldname, newname, declti, scopeendti in renames:
+        byname.setdefault(oldname, []).append((newname, declti, scopeendti))
+
+    ops = []
+    for ti, tok in enumerate(tokens):
+        if tok[0] != "ident":
+            continue
+        rules = byname.get(tok[1])
+        if not rules:
+            continue
+        bestname = None
+        bestdecl = -1
+        for newname, declti, scopeendti in rules:
+            if declti <= ti < scopeendti and declti > bestdecl:
+                bestname = newname
+                bestdecl = declti
+        if bestname is not None:
+            ops.append((tok[2], tok[3], bestname))
+
+    if not ops:
+        return code
+
+    ops.sort()
+    out = []
+    last = 0
+    for start, end, newtext in ops:
+        if start < last:
+            continue
+        out.append(code[last:start])
+        out.append(newtext)
+        last = end
+    out.append(code[last:])
+    return "".join(out)
+
+
+def rename(code, preserved=None):
+    return renamecode(code, preserved)
+
+
+def portfree(host, port):
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            return True
+    except OSError:
+        return False
+
+
+def anyport(host, low=20000, high=65000, tries=200):
+    for _ in range(tries):
+        port = random.randint(low, high)
+        if portfree(host, port):
+            return port
+    for port in range(low, high):
+        if portfree(host, port):
+            return port
+    return None
+
+
+def main():
+    p = argparse.ArgumentParser(prog="luaurenamer")
+    p.add_argument("input", nargs="?", default=None)
+    p.add_argument("output", nargs="?", default=None)
+    p.add_argument("--web", action="store_true")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=0)
+    p.add_argument("--no-browser", action="store_true")
+    args = p.parse_args()
+
+    if args.input:
+        with open(args.input, "r", encoding="utf-8", errors="replace") as f:
+            code = f.read()
+    else:
+        code = sys.stdin.read()
+
+    if not code:
+        return 1
+
+    result = renamecode(code)
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(result)
+    else:
+        sys.stdout.write(result)
+        if not result.endswith("\n"):
+            sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
