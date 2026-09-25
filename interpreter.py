@@ -1,5 +1,5 @@
 import math
-from node import node
+from syntax import node
 
 class fall(Exception):
     pass
@@ -170,6 +170,8 @@ def ftype(args):
         return 'number'
     if isinstance(v, str):
         return 'string'
+    if hasattr(v, 'kind'):
+        return 'userdata'
     if isinstance(v, (list, dict)):
         return 'table'
     if callable(v):
@@ -189,6 +191,8 @@ def ftostring(args):
         if v == int(v):
             return str(int(v))
         return repr(v)
+    if hasattr(v, 'name'):
+        return v.name
     return str(v)
 
 
@@ -264,7 +268,7 @@ def fipairs(args):
 
     def iterfn(s, ctrl=None):
         i = s['i']
-        if i >= len(s['t']):
+        if i >= len(t):
             return None
         s['i'] = i + 1
         return (i + 1, s['t'][i])
@@ -330,6 +334,7 @@ def load(env):
     env.make('pairs', fpairs)
     env.make('ipairs', fipairs)
     env.make('type', ftype)
+    env.make('typeof', ftype)
     env.make('tostring', ftostring)
     env.make('tonumber', ftonumber)
     env.make('select', fselect)
@@ -402,7 +407,9 @@ def one(n, env, budget):
             else:
                 base = info[2]
                 kk = info[3]
-                if isinstance(base, list):
+                if hasattr(base, 'set'):
+                    base.set(str(kk) if isinstance(kk, str) else kk, vl)
+                elif isinstance(base, list):
                     i = int(kk)
                     if i < 1:
                         i = len(base) + i + 1
@@ -543,6 +550,8 @@ def grab(n, env, budget):
     if kind == 'idx':
         base = grab(n.base, env, budget)
         kk = grab(n.key, env, budget)
+        if hasattr(base, 'get'):
+            return base.get(str(kk) if isinstance(kk, str) else kk)
         if isinstance(base, list):
             i = int(kk)
             if i < 0:
@@ -565,10 +574,12 @@ def grab(n, env, budget):
     if kind == 'mcall':
         base = grab(n.base, env, budget)
         args = [grab(a, env, budget) for a in n.args]
+        if hasattr(base, n.name):
+            return getattr(base, n.name)([base] + args)
         if isinstance(base, dict):
             fn = base.get(n.name)
             if callable(fn):
-                return fn(args)
+                return fn([base] + args)
         raise fall('mcall')
     if kind == 'table':
         return dotable(n, env, budget)
@@ -640,6 +651,8 @@ def oneop(n, env, budget):
     if op == '-':
         return -a
     if op == '#':
+        if hasattr(a, 'kind'):
+            return 0
         if isinstance(a, (str, list, dict)):
             return len(a)
         raise fall('len')
@@ -649,24 +662,33 @@ def oneop(n, env, budget):
 
 
 def docall(n, env, budget):
-    if n.base.kind == 'name':
-        nm = n.base.name
+    base = n.base
+    if base.kind == 'pare':
+        base = base.exp
+    if base.kind == 'name':
+        nm = base.name
         args = [grab(a, env, budget) for a in n.args]
         try:
             val = env.grab(nm)
         except KeyError:
             raise fall('call ' + nm)
         return fire(val, args, budget)
-    if n.base.kind == 'idx':
-        base = grab(n.base.base, env, budget)
-        kk = grab(n.base.key, env, budget)
+    if base.kind == 'idx':
+        b = grab(base.base, env, budget)
+        kk = grab(base.key, env, budget)
         args = [grab(a, env, budget) for a in n.args]
-        if isinstance(base, dict):
-            fn = base.get(kk)
+        if hasattr(b, 'get'):
+            fn = b.get(str(kk) if isinstance(kk, str) else kk)
+            if callable(fn):
+                return fn(args)
+        if isinstance(b, dict):
+            fn = b.get(kk)
             if callable(fn):
                 return fn(args)
         raise fall('call idx')
-    raise fall('call')
+    val = grab(base, env, budget)
+    args = [grab(a, env, budget) for a in n.args]
+    return fire(val, args, budget)
 
 
 def fire(val, args, budget):
