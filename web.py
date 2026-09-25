@@ -4,8 +4,7 @@ import webbrowser
 import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from main import clean
-from trace import on as traceon
+from cli import clean
 
 page = """<!DOCTYPE html>
 <html lang="en">
@@ -26,16 +25,14 @@ textarea { flex: 1; width: 100%; padding: 14px; background: #16191f; color: #e6e
 textarea:focus { border-color: #4a7cff; }
 button { background: #22262e; color: #e6e8eb; border: 1px solid #2e333d; padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; font-family: inherit; }
 button:hover { background: #2b303a; border-color: #3a404c; }
-button:active { transform: scale(0.97); }
 button.act { background: #4a7cff; border-color: #4a7cff; color: #fff; }
 button.act:hover { background: #5b88ff; border-color: #5b88ff; }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
 .foot { display: flex; gap: 10px; margin-top: 16px; align-items: center; }
-.note { color: #8b95a3; font-size: 12px; margin-left: auto; max-width: 60%; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+.note { color: #8b95a3; font-size: 12px; margin-left: auto; }
 .note.ok { color: #4ade80; }
 .note.bad { color: #f87171; }
 input[type=file] { display: none; }
-@media (max-width: 720px) { .row { grid-template-columns: 1fr; height: auto; } .col { height: 300px; } }
 </style>
 </head>
 <body>
@@ -96,35 +93,20 @@ pick('deobf').onclick = async () => {
   const text = pick('src').value;
   if (!text.trim()) { say('nothing to do', 'bad'); return; }
   say('working...');
-  let res;
   try {
-    res = await fetch('/work', {
+    const res = await fetch('/work', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: text })
     });
-  } catch (err) {
-    say('network: ' + err.message, 'bad');
-    return;
-  }
-  let data = {};
-  try {
-    data = await res.json();
-  } catch (err) {
-    say('bad response from server', 'bad');
-    return;
-  }
-  if (!res.ok || data.error) {
-    say(data.error || ('server ' + res.status), 'bad');
-    return;
-  }
-  pick('out').value = data.text;
-  pick('copy').disabled = false;
-  pick('save').disabled = false;
-  if (data.notes && data.notes.length) {
-    say('done - ' + data.notes.join('; '), 'ok');
-  } else {
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    pick('out').value = data.text;
+    pick('copy').disabled = false;
+    pick('save').disabled = false;
     say('done', 'ok');
+  } catch (err) {
+    say(err.message, 'bad');
   }
 };
 pick('copy').onclick = async () => {
@@ -184,22 +166,15 @@ class door(BaseHTTPRequestHandler):
             if not isinstance(src, str):
                 raise ValueError('text must be a string')
             out, note = clean(src)
-            body = json.dumps({'text': out, 'notes': note['notes']}).encode('utf-8')
+            body = json.dumps({'text': out, 'notes': note.get('notes', [])}).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
         except Exception as e:
-            tb = traceback.format_exc()
-            sys.stderr.write(tb)
-            sys.stderr.flush()
-            name = e.__class__.__name__
-            text = str(e)
-            if text:
-                msg = name + ': ' + text
-            else:
-                msg = name
+            traceback.print_exc()
+            msg = e.__class__.__name__ + ': ' + str(e)
             body = json.dumps({'error': msg}).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -212,12 +187,10 @@ def run(host='127.0.0.1', port=8899):
     server = HTTPServer((host, port), door)
     url = 'http://%s:%d/' % (host, server.server_address[1])
     print('running at ' + url)
-    print('debug trace is on - every scan/read/wash step prints to this terminal')
     threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print('')
         server.server_close()
 
 
