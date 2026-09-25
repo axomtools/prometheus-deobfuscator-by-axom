@@ -1,7 +1,7 @@
-from node import node
-from step import walk
-from toy import space, load, fire, grab
-from trace import say
+from syntax import node
+from walker import walk
+from interpreter import space, load, fire, grab
+from log import say
 import re
 
 show = re.compile(r'^[\x20-\x7e]*$')
