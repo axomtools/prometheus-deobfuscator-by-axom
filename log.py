@@ -16,11 +16,3 @@ def fail(area, err):
         for row in traceback.format_exc().splitlines():
             sys.stderr.write('    ' + row + '\n')
         sys.stderr.flush()
-
-
-def dump(label, obj, deep=0):
-    if not on:
-        return
-    pad = '  ' * deep
-    sys.stderr.write(pad + label + ': ' + repr(obj) + '\n')
-    sys.stderr.flush()
