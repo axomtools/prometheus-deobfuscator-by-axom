@@ -1,4 +1,17 @@
-from step import walk
+import re
+from walker import walk
+from log import say
+
+ident = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+skipset = {
+    'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for',
+    'function', 'goto', 'if', 'in', 'local', 'nil', 'not', 'or',
+    'repeat', 'return', 'then', 'true', 'until', 'while', 'continue',
+    'game', 'script', 'workspace', 'Instance', 'Enum', 'task',
+    'math', 'string', 'table', 'os', 'bit32', 'utf8', 'debug',
+    'print', 'warn', 'error', 'assert', 'pcall', 'xpcall', 'require',
+}
 
 
 def tally(node):
@@ -57,11 +70,27 @@ def program(node):
     return vals
 
 
+def candidates(strings_found):
+    out = set()
+    for s in strings_found:
+        if not isinstance(s, str):
+            continue
+        if len(s) < 2 or len(s) > 30:
+            continue
+        if not ident.match(s):
+            continue
+        if s in skipset:
+            continue
+        out.add(s)
+    return out
+
+
 def review(tree):
     report = {
         'strings': [],
         'program': [],
         'notes': [],
+        'hints': set(),
     }
 
     def visit(node):
@@ -74,14 +103,13 @@ def review(tree):
             if counts['str'] >= 20 and counts['str'] >= counts['num']:
                 report['strings'] = strings(expr)
                 report['notes'].append('string table at ' + name)
+                say('unvm', 'found string table at ' + name)
+                report['hints'] |= candidates(report['strings'])
             prog = program(expr)
             if prog is not None:
                 report['program'] = prog
                 report['notes'].append('program table at ' + name)
+                say('unvm', 'found program table at ' + name)
 
     walk(tree, visit)
     return report
-
-
-def dump(tree):
-    return review(tree)
